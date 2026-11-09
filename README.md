@@ -68,3 +68,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 ## 损坏的 PDF
 
 文件按原样保存，阅读器不会尝试改写。若 PDF 结构损坏（例如缺少 `xref` / `%%EOF`，常见于下载中断），打开时会给出说明，并提供「下载原件」和「重试」，方便用其它工具修复后再导入。
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。随包分发的 pdf.js 仍为其 Apache-2.0 许可，副本在 `public/LICENSE-pdfjs.txt`。
