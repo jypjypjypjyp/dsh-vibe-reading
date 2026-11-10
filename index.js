@@ -4,6 +4,7 @@
  * Serves everything the sidebar reader needs from one prefix route:
  *   /vibe-reading/api/library   GET    paper index
  *   /vibe-reading/api/upload    POST   raw PDF bytes -> stored paper
+ *   /vibe-reading/api/import    POST   {"url": "..."} -> download -> stored paper
  *   /vibe-reading/api/doc       GET/PATCH/DELETE  one paper's metadata + annotations
  *   /vibe-reading/file          GET    original PDF bytes (Range capable)
  *   /vibe-reading/static/*      GET    vendored pdf.js runtime, cmaps, standard fonts
@@ -35,6 +36,8 @@ const STORE_DIR = process.env.DSH_VIBE_READING_DIR !== undefined && process.env.
 
 /** One upload may carry at most this many bytes. */
 const MAX_UPLOAD = 160 * 1024 * 1024
+/** How long a link import may take before it is abandoned. */
+const MAX_IMPORT_MS = 120000
 /** Metadata/annotation writes are small; anything larger is a mistake. */
 const MAX_META_BODY = 8 * 1024 * 1024
 /** Upper bound on stored annotations per paper. */
@@ -1216,6 +1219,120 @@ async function installSidebar() {
   return { ok: true, output: result.output.slice(-2000) }
 }
 
+/** Write one PDF and its metadata; both the local upload and the link import land here. */
+async function storePdf(bytes, fileName, requestedTitle) {
+  const id = randomUUID()
+  await ensureStore()
+  await writeFile(pdfPath(id), bytes)
+  const now = Date.now()
+  const title = (requestedTitle.trim() || fileName.replace(/\.pdf$/i, '')).slice(0, 300) || 'paper.pdf'
+  const meta = normalizeMeta({
+    title,
+    fileName,
+    size: bytes.length,
+    createdAt: now,
+    updatedAt: now,
+    pageCount: null,
+    lastPage: 1,
+    scrollRatio: 0,
+    annotations: [],
+  }, id)
+  await writeMeta(meta)
+  return meta
+}
+
+/** Accepts a PDF link; arXiv abstract pages are rewritten to their PDF endpoint. */
+function pdfUrlFrom(value) {
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  let url
+  try {
+    url = new URL(value.trim())
+  } catch {
+    return undefined
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+  if (url.hostname.replace(/^www\./, '') === 'arxiv.org' && url.pathname.startsWith('/abs/')) {
+    const id = url.pathname.slice('/abs/'.length).replace(/\/+$/, '')
+    return id === '' ? undefined : `https://arxiv.org/pdf/${id}`
+  }
+  return url.toString()
+}
+
+function fileNameFromUrl(url) {
+  const path = new URL(url).pathname
+  const last = decodeURIComponent(path.split('/').filter(Boolean).pop() ?? '')
+  const clean = last.replace(/[^\w.\-]+/g, '_').slice(0, 120)
+  if (clean === '') return 'paper.pdf'
+  return /\.pdf$/i.test(clean) ? clean : `${clean}.pdf`
+}
+
+function titleFromUrl(url) {
+  const name = fileNameFromUrl(url)
+  const bare = name.replace(/\.pdf$/i, '')
+  if (new URL(url).hostname.replace(/^www\./, '') === 'arxiv.org') return `arXiv ${bare}`
+  return bare
+}
+
+/** Every import path ends here: a real PDF, within the upload budget. */
+function assertPdf(bytes) {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) {
+    throw Object.assign(new Error('the file is empty'), { status: 400 })
+  }
+  if (bytes.length > MAX_UPLOAD) {
+    throw Object.assign(new Error('the file is larger than 160 MB'), { status: 400 })
+  }
+  // The header may sit after a few bytes of junk in the wild, so look at the first 1 KB.
+  if (!bytes.subarray(0, 1024).toString('latin1').includes('%PDF-')) {
+    throw Object.assign(new Error('not a PDF: the file has no %PDF- header'), { status: 400 })
+  }
+}
+
+async function readLocalPdf(target) {
+  const expanded = String(target).trim().replace(/^~(?=$|[\\/])/, homedir())
+  const info = await stat(expanded).catch(() => undefined)
+  if (info === undefined || !info.isFile()) {
+    throw Object.assign(new Error(`no such file: ${expanded}`), { status: 400 })
+  }
+  const bytes = await readFile(expanded)
+  assertPdf(bytes)
+  return { bytes, fileName: basename(expanded) }
+}
+
+async function downloadPdf(target) {
+  let response
+  try {
+    response = await fetch(target, { redirect: 'follow', signal: AbortSignal.timeout(MAX_IMPORT_MS) })
+  } catch (error) {
+    throw Object.assign(new Error(`could not download: ${error?.cause?.message ?? error?.message ?? error}`), { status: 502 })
+  }
+  if (!response.ok) {
+    throw Object.assign(new Error(`could not download: HTTP ${response.status}`), { status: 502 })
+  }
+  const declared = Number(response.headers.get('content-length') ?? 0)
+  if (Number.isFinite(declared) && declared > MAX_UPLOAD) {
+    throw Object.assign(new Error('the file is larger than 160 MB'), { status: 400 })
+  }
+  const bytes = Buffer.from(await response.arrayBuffer())
+  assertPdf(bytes)
+  return { bytes, fileName: fileNameFromUrl(target) }
+}
+
+/** Remove a paper and everything derived from it (files, parsed text, work folder). */
+async function deletePaper(id) {
+  let meta
+  try {
+    meta = await readMeta(id)
+  } catch {
+    throw Object.assign(new Error(`no such paper: ${id}`), { status: 404 })
+  }
+  stopParse(id, 'deleted')
+  await unlink(pdfPath(id)).catch(() => {})
+  await unlink(metaPath(id)).catch(() => {})
+  await rm(join(STORE_DIR, `${id}.md`), { recursive: true, force: true }).catch(() => {})
+  if (meta.workDir !== '') await rm(meta.workDir, { recursive: true, force: true }).catch(() => {})
+  return meta
+}
+
 async function handleApi(req, res, url, fence) {
   if (!fence(req)) {
     sendError(res, 403, 'forbidden', 'forbidden')
@@ -1261,30 +1378,45 @@ async function handleApi(req, res, url, fence) {
       return true
     }
     const body = await readBody(req, MAX_UPLOAD)
-    if (body.length < 5 || body.subarray(0, 5).toString('latin1') !== '%PDF-') {
-      sendError(res, 400, 'not a PDF file', 'not-pdf')
+    try {
+      assertPdf(body)
+    } catch (error) {
+      sendError(res, 400, error?.message ?? 'not a PDF file', 'not-pdf')
       return true
     }
-    const id = randomUUID()
     const requestedName = url.searchParams.get('name') ?? ''
     const fileName = requestedName.trim().slice(0, 300) || 'paper.pdf'
     const requestedTitle = (url.searchParams.get('title') ?? '').trim()
-    const title = (requestedTitle || fileName.replace(/\.pdf$/i, '')).slice(0, 300)
-    await ensureStore()
-    await writeFile(pdfPath(id), body)
-    const now = Date.now()
-    const meta = normalizeMeta({
-      title,
-      fileName,
-      size: body.length,
-      createdAt: now,
-      updatedAt: now,
-      pageCount: null,
-      lastPage: 1,
-      scrollRatio: 0,
-      annotations: [],
-    }, id)
-    await writeMeta(meta)
+    const meta = await storePdf(body, fileName, requestedTitle)
+    sendJson(res, 201, { ok: true, doc: summaryOf(meta) })
+    return true
+  }
+
+  if (pathname === '/vibe-reading/api/import') {
+    if (req.method !== 'POST') {
+      sendError(res, 405, 'method not allowed', 'method-error')
+      return true
+    }
+    let payload
+    try {
+      payload = JSON.parse((await readBody(req, MAX_META_BODY)).toString('utf8') || '{}')
+    } catch {
+      sendError(res, 400, 'invalid JSON', 'bad-json')
+      return true
+    }
+    const target = pdfUrlFrom(payload.url)
+    if (target === undefined) {
+      sendError(res, 400, 'only http(s) links are supported', 'bad-url')
+      return true
+    }
+    let fetched
+    try {
+      fetched = await downloadPdf(target)
+    } catch (error) {
+      sendError(res, error?.status ?? 502, error?.message ?? String(error), 'download-failed')
+      return true
+    }
+    const meta = await storePdf(fetched.bytes, fetched.fileName, titleFromUrl(target))
     sendJson(res, 201, { ok: true, doc: summaryOf(meta) })
     return true
   }
@@ -1349,10 +1481,11 @@ async function handleApi(req, res, url, fence) {
       return true
     }
     if (req.method === 'DELETE') {
-      await unlink(pdfPath(id)).catch(() => {})
-      await unlink(metaPath(id)).catch(() => {})
-      await rm(join(STORE_DIR, `${id}.md`), { recursive: true, force: true }).catch(() => {})
-      stopParse(id, 'deleted')
+      const removed = await deletePaper(id).catch(() => undefined)
+      if (removed === undefined) {
+        sendError(res, 404, 'paper not found', 'not-found')
+        return true
+      }
       sendJson(res, 200, { ok: true })
       return true
     }
@@ -1613,15 +1746,70 @@ const ANNOTATION_TOOL_DESCRIPTION = [
   'action="create" appends annotations, either one (page/text/note/kind) or a batch via items; text is the quoted passage, note is the judgement.',
   'action="update"/"delete" change one annotation by id; action="note"/"update_note"/"delete_note" manage paper-level notes (write one note per block — 论文简介 / 方法骨架 / 关键证据 / 正反辩论 / 怎么用 / 已读 — each with its title).',
   'action="code" reads or records the open-source repository; the checkout itself lands in the paper folder\'s remote/ through the reader UI.',
-  'action="keywords" stores 3-6 domain keywords for the paper, shown on its library card; run it after reading.',
+  'action="keywords" stores 3-6 domain keywords and, when title is given, the concise paper title shown on the library card; run it after reading.',
+  'action="import" adds a paper from a local PDF path or an http(s) link (arXiv abs links are rewritten to pdf); every import is checked for a %PDF- header and the 160 MB limit before it is stored.',
+  'action="rename" changes a paper\'s title or keywords; action="delete" removes a paper together with its work folder (pdf, markdown, notes, code) — do that only when the user asks for it.',
 ].join(' ')
 
 function toolText(value) {
   return [{ type: 'text', text: JSON.stringify(value, null, 2).slice(0, 60000) }]
 }
 
+/** 3-8 short domain keywords from an array or a comma-separated string. */
+function normalizeKeywords(value) {
+  const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,，、]/) : []
+  return raw
+    .filter((word) => typeof word === 'string')
+    .map((word) => word.trim().slice(0, 24))
+    .filter((word) => word !== '')
+    .slice(0, 8)
+}
+
 async function runAnnotationTool(args, exec) {
   const action = typeof args.action === 'string' ? args.action : 'list'
+
+  if (action === 'import') {
+    const title = typeof args.title === 'string' ? args.title : ''
+    let fetched
+    let suggested = title
+    if (typeof args.path === 'string' && args.path.trim() !== '') {
+      fetched = await readLocalPdf(args.path)
+    } else if (typeof args.url === 'string' && args.url.trim() !== '') {
+      const target = pdfUrlFrom(args.url)
+      if (target === undefined) {
+        throw Object.assign(new Error('only http(s) links are supported'), { status: 400 })
+      }
+      fetched = await downloadPdf(target)
+      if (suggested.trim() === '') suggested = titleFromUrl(target)
+    } else {
+      throw Object.assign(new Error('import needs path (a local PDF file) or url'), { status: 400 })
+    }
+    const meta = await storePdf(fetched.bytes, fetched.fileName, suggested)
+    return { ok: true, doc: summaryOf(meta) }
+  }
+
+  // `delete` with an annotation id removes that annotation; without one it removes the paper.
+  if (action === 'delete' && (args.id === undefined || args.id === '')) {
+    const id = docId(args.docId)
+    if (id === undefined) throw Object.assign(new Error('delete needs a docId (paper) or an id (annotation)'), { status: 400 })
+    const removed = await deletePaper(id)
+    return { ok: true, docId: id, removed: removed.title }
+  }
+
+  if (action === 'rename') {
+    const id = docId(args.docId)
+    if (id === undefined) throw Object.assign(new Error('rename needs a docId'), { status: 400 })
+    const meta = await readMeta(id)
+    if (typeof args.title === 'string' && args.title.trim() !== '') {
+      meta.title = args.title.trim().replace(/\s+/g, ' ').slice(0, 160)
+    }
+    if (args.keywords !== undefined) meta.keywords = normalizeKeywords(args.keywords)
+    meta.updatedAt = Date.now()
+    await writeMeta(meta)
+    await paperBrief(id).catch(() => {})
+    return { ok: true, docId: id, title: meta.title, keywords: meta.keywords }
+  }
+
   if (action === 'list') {
     const id = docId(args.docId)
     if (id === undefined) {
@@ -1816,17 +2004,16 @@ async function runAnnotationTool(args, exec) {
     const id = docId(args.docId)
     if (id === undefined) throw Object.assign(new Error('keywords needs a docId'), { status: 400 })
     const meta = await readMeta(id)
-    const raw = Array.isArray(args.keywords) ? args.keywords : typeof args.keywords === 'string' ? args.keywords.split(/[,，、]/) : []
-    const words = raw
-      .filter((word) => typeof word === 'string')
-      .map((word) => word.trim().slice(0, 24))
-      .filter((word) => word !== '')
-      .slice(0, 8)
+    const words = normalizeKeywords(args.keywords)
     meta.keywords = words
+    // The library card shows the title, and a file-name title ("1706.03762v1") says
+    // nothing; the same call that files the keywords rewrites it to the real one.
+    const title = typeof args.title === 'string' ? args.title.trim().replace(/\s+/g, ' ') : ''
+    if (title !== '') meta.title = title.slice(0, 160)
     meta.updatedAt = Date.now()
     await writeMeta(meta)
     await paperBrief(id).catch(() => {})
-    return { ok: true, docId: id, keywords: words }
+    return { ok: true, docId: id, keywords: words, title: meta.title }
   }
 
   if (action === 'code') {
@@ -1884,10 +2071,12 @@ function registerAnnotationTool(ctx) {
         properties: {
           action: {
             type: 'string',
-            enum: ['list', 'search', 'create', 'update', 'delete', 'code', 'keywords', 'note', 'update_note', 'delete_note'],
-            description: "list papers, one paper's annotations and its notes; create/update/delete an annotation; note/update_note/delete_note manage paper-level notes", 
+            enum: ['list', 'search', 'create', 'update', 'delete', 'import', 'rename', 'code', 'keywords', 'note', 'update_note', 'delete_note'],
+            description: "list papers, one paper's annotations and its notes; create/update/delete an annotation; note/update_note/delete_note manage paper-level notes; import/rename/delete manage the library itself", 
           },
           docId: { type: 'string', description: 'paper id from action="list"' },
+          path: { type: 'string', description: 'for action="import": absolute or ~ path of a local PDF file' },
+          url: { type: 'string', description: 'for action="import": http(s) link to a PDF; an arXiv abs link is rewritten to its pdf endpoint' },
           query: { type: 'string', description: 'for action="search": case-insensitive text to look for in annotations and notes' },
           keywords: {
             type: 'array',
@@ -1916,7 +2105,7 @@ function registerAnnotationTool(ctx) {
           repo: { type: 'string', description: 'for action="code": open-source repository URL of this paper\'s implementation' },
           text: { type: 'string', description: 'the quoted passage the annotation is about' },
           note: { type: 'string', description: 'the annotation body, or the paper-level note text, written in the user\'s language and kept to one sentence' },
-          title: { type: 'string', description: 'for note/update_note: the block heading, e.g. 论文简介 / 方法骨架 / 关键证据 / 正反辩论 / 怎么用 / 已读' },
+          title: { type: 'string', description: 'for note/update_note: the block heading, e.g. 论文简介 / 方法骨架 / 关键证据 / 正反辩论 / 怎么用 / 已读; for keywords: the concise paper title that replaces the file-name title on the library card' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -1976,6 +2165,14 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
    - 只覆盖一部分：只补缺的章节，不从第一页重来。
    - 没读过：走下面的完整流程。
 
+## 一·五、论文库本身也能管理
+
+用户让你加论文、改标题、删论文时，不用他动手：
+
+- \`action="import"\`：\`path\` 传本地 PDF 路径，或 \`url\` 传链接（arXiv 的 abs 链接会自动换成 pdf）。落库前会校验 \`%PDF-\` 文件头与 160 MB 上限，不是 PDF 会被拒——不要绕过它去复制文件。
+- \`action="rename"\`：改标题或关键词（\`keywords\` 给数组）。
+- \`action="delete"\`：连论文一起删掉它的工作目录（pdf、markdown、标注、代码）。**只有用户明确说要删时才做**，删完把删掉的是哪篇说清楚。
+
 ## 二、读
 
 读 \`paths.markdown\`；没有 markdown 就提示用户在阅读器里点解析，或按 PDF 页读。
@@ -2014,10 +2211,15 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 标注与笔记都落进论文目录的 \`notes.md\`——那是这篇论文唯一的可读文档，别在别处再存一份。
 同一篇论文只有这一组，不要写第二遍；有新认识就 \`update_note\` 改对应的那块。
 
-## 五、关键词：让这篇论文可被认出
+## 五、关键词与标题：让这篇论文可被认出
 
-读完（标注与大笔记都落好）再跑一次 \`action="keywords"\`，\`keywords\` 给 3–6 个词：大领域 + 子方向 + 任务或数据名，例如 \`["VLA", "推理运行时", "Roofline", "机器人策略"]\`。
-它直接显示在论文库卡片上，也是以后 \`search\` 之外找论文的入口。写完再回答用户。
+读完（标注与大笔记都落好）再跑一次 \`action="keywords"\`，一次给两样：
+
+- \`keywords\`：3–6 个词，大领域 + 子方向 + 任务或数据名，例如 \`["VLA", "推理运行时", "Roofline", "机器人策略"]\`。
+- \`title\`：论文的简洁标题——取原文主标题，去掉 arXiv 编号、版本号与「Preprint」之类的尾巴，副标题太长就砍掉；中文论文保留原中文标题，不要自己翻译。
+
+\`title\` 会替换论文库卡片上那个从文件名来的临时名字（例如 \`1706.03762v1\`）；不传就只更新关键词。
+两项都显示在论文库卡片上，也是 \`search\` 之外找论文的入口。写完再回答用户。
 
 ## 六、回答
 

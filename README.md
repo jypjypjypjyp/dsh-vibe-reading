@@ -37,7 +37,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 ## 使用
 
 1. 打开右侧边栏，点 `+`，选「Vibe Reading」。
-2. 点工具栏的上传按钮（或把 PDF 拖进面板）导入论文。导入后静默用 markitdown 转一份 Markdown；「更多 → 解析正文（MinerU）」会中断它、改用 MinerU（要 Token），底部进度条实时走。
+2. 导入论文有三条路：工具栏的「本地导入」选文件、把 PDF 拖进面板、或「链接导入」粘贴地址（PDF 直链，或 arXiv 的 `abs` / `pdf` 链接，`abs` 会自动换成 `pdf`）。导入后静默用 markitdown 转一份 Markdown；「更多 → 解析正文（MinerU）」会中断它、改用 MinerU（要 Token），底部进度条实时走。
 3. 选中正文文字，使用浮出菜单；工具栏的 `</>` 打开「代码」页，`@` 把 `/dsh-vibe-reading` 与论文目录写进输入框，`⋯` 里有「解析正文（MinerU）」与「设置」。
 4. 面板三栏：**标注**（挂在某页某段原文上的高亮与批注，第二行显示它的笔记）、**笔记**（论文级的分块结论，可多条，随时增删改）、**代码**（再分「开源仓库 / 本地复现仓库」两个页签，各有目录浏览）。
 
@@ -55,7 +55,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 
 ## 批注工具
 
-`vibe_reading` 面向模型：`action=list` 不带 `docId` 列出论文库，带 `docId` 读该论文的全部标注与笔记；`action=create` 写一条标注（`page` + `text` + `note`，作者记为 AI）；`update` / `delete` 按 id 改删；`action=note` / `update_note` / `delete_note` 管论文级笔记；`action=code` 读或写这篇论文的代码仓库（`repo` / `path`），阅读器「AI 查找仓库」按钮就是让 agent 走这条路自动回填。
+`vibe_reading` 面向模型：`action=list` 不带 `docId` 列出论文库，带 `docId` 读该论文的全部标注与笔记；`action=import` 让 agent 自己从本地路径（`path`）或链接（`url`，arXiv 的 abs 会换成 pdf）加论文，落库前统一校验 `%PDF-` 文件头与 160 MB 上限；`action=rename` 改标题或关键词；`action=delete` 删论文并清掉它的工作目录（只在用户明确要求时用）；`action=create` 写一条标注（`page` + `text` + `note`，作者记为 AI）；`update` / `delete` 按 id 改删；`action=note` / `update_note` / `delete_note` 管论文级笔记；`action=code` 读或写这篇论文的代码仓库（`repo` / `path`），阅读器「AI 查找仓库」按钮就是让 agent 走这条路自动回填。
 
 ## 跨会话记忆 skill
 
@@ -64,6 +64,8 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 它出现在 agent 的 skill 目录里，模型可以自行调用；点阅读器的 `@` 时，输入框里写的是 `/dsh-vibe-reading` 这个手势加论文目录信息，由 DSH 的 skill 机制按需加载正文（`dsh-tool-skill` 用 `/(^|\s)\/([a-z0-9-]+)(?=\s|$)/` 扫描用户消息），而不是把正文粘进对话。
 
 规则很短：标注挂原文、笔记记判断，每条一句话不超过 40 字，只写结论与依据，不写推测与过程。
+
+读完由 agent 收尾：`action="keywords"` 一次写入领域关键词和论文的简洁标题（`title`），后者会替换从文件名来的临时名字（例如 `1706.03762v1`），直接决定论文库卡片上显示什么。
 
 ## 损坏的 PDF
 

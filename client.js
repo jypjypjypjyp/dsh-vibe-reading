@@ -60,6 +60,10 @@ window.__ModuleLoader__.load({
       bookmark: [["path", { d: "M4 2.6h8v11l-4-2.6-4 2.6z" }]],
       trash: [["path", { d: "M3 4h10M6.2 4V2.8h3.6V4M4.6 4l.6 8.6h5.6L11.4 4" }]],
       upload: [["path", { d: "M8 10.4V3.4M5 6.4l3-3 3 3M3 12.6h10" }]],
+      link: [
+        ["path", { d: "M6.7 9.3a2.6 2.6 0 0 1 0-3.7l1.9-1.9a2.6 2.6 0 0 1 3.7 3.7l-1 1" }],
+        ["path", { d: "M9.3 6.7a2.6 2.6 0 0 1 0 3.7l-1.9 1.9a2.6 2.6 0 0 1-3.7-3.7l1-1" }]
+      ],
       download: [["path", { d: "M8 2.8v7M5 6.8l3 3 3-3M3 13.2h10" }]],
       close: [["path", { d: "m4.4 4.4 7.2 7.2M11.6 4.4l-7.2 7.2" }]],
       pencil: [["path", { d: "M10.6 2.8 13.2 5.4 5.5 13.1H2.9V10.5z" }], ["path", { d: "m9.4 4 2.6 2.6" }]],
@@ -136,6 +140,16 @@ window.__ModuleLoader__.load({
         library: "论文库",
         upload: "上传论文",
         uploadShort: "导入 PDF",
+        importLocal: "本地导入",
+        importLink: "链接导入",
+        importLocalShort: "本地",
+        importLinkShort: "链接",
+        linkTitle: "从链接导入",
+        linkHint: "粘贴 PDF 直链；arXiv 的 abs 与 pdf 链接都可以",
+        linkPlaceholder: "https://arxiv.org/abs/1706.03762",
+        linkInvalid: "请输入 http(s) 链接",
+        linkDownloading: "正在下载…",
+        linkFailed: "链接导入失败",
         emptyTitle: "把论文拖进来",
         emptyDesc: "PDF 按原始排版、字体与插图逐页渲染，导入后不改变任何内容",
         chooseFile: "选择 PDF 文件",
@@ -271,6 +285,16 @@ window.__ModuleLoader__.load({
         library: "Papers",
         upload: "Upload paper",
         uploadShort: "Import PDF",
+        importLocal: "Local file",
+        importLink: "From link",
+        importLocalShort: "Local",
+        importLinkShort: "Link",
+        linkTitle: "Import from a link",
+        linkHint: "Paste a direct PDF link; arXiv abs and pdf links both work",
+        linkPlaceholder: "https://arxiv.org/abs/1706.03762",
+        linkInvalid: "Enter an http(s) link",
+        linkDownloading: "Downloading…",
+        linkFailed: "Import from link failed",
         emptyTitle: "Drop a paper here",
         emptyDesc: "Pages render with their original layout, fonts and figures — the file itself is never altered",
         chooseFile: "Choose a PDF",
@@ -1089,6 +1113,18 @@ window.__ModuleLoader__.load({
       var moreOpenPair = useState(false);
       var moreOpen = moreOpenPair[0];
       var setMoreOpen = moreOpenPair[1];
+
+      var linkPair = useState(null);
+      var linkDraft = linkPair[0];
+      var setLinkDraft = linkPair[1];
+
+      var linkOriginPair = useState("reader");
+      var linkOrigin = linkOriginPair[0];
+      var setLinkOrigin = linkOriginPair[1];
+
+      var linkBusyPair = useState(false);
+      var linkBusy = linkBusyPair[0];
+      var setLinkBusy = linkBusyPair[1];
 
       var dragPair = useState(false);
       var dragOver = dragPair[0];
@@ -2039,6 +2075,53 @@ window.__ModuleLoader__.load({
         if (fileInputRef.current !== null) fileInputRef.current.click();
       }
 
+      function afterImport(doc, openReader) {
+        return refreshLibrary().then(function () {
+          showToast(t("imported"));
+          // Extracting text is silent and automatic; MinerU is an explicit switch in the reader.
+          startParse(doc.id, "markdown").then(function (state) {
+            applyParseState(state);
+            pollParse(doc.id);
+          }).catch(function () { /* a failed silent parse never blocks reading */ });
+          // Importing from the library keeps the library on screen; it is the
+          // list the user is working in, not a detour through the new paper.
+          return openReader ? openDoc(doc.id) : null;
+        });
+      }
+
+      function openLinkDialog() {
+        setLinkOrigin(libraryOpen ? "library" : "reader");
+        setLinkDraft({ value: "", error: "" });
+        setMoreOpen(false);
+      }
+
+      function closeLinkDialog() {
+        if (linkBusy) return;
+        setLinkDraft(null);
+      }
+
+      function submitLink() {
+        if (linkDraft === null || linkBusy) return;
+        var target = String(linkDraft.value || "").trim();
+        if (!/^https?:\/\/[^\s]+$/i.test(target)) {
+          setLinkDraft({ value: linkDraft.value, error: t("linkInvalid") });
+          return;
+        }
+        setLinkBusy(true);
+        setError(null);
+        sendJsonRequest(API_BASE + "import", "POST", { url: target })
+          .then(function (body) { return body.doc; })
+          .then(function (doc) {
+            setLinkDraft(null);
+            return afterImport(doc, linkOrigin !== "library");
+          })
+          .catch(function (errorValue) {
+            var message = errorValue && errorValue.message ? errorValue.message : String(errorValue);
+            setLinkDraft({ value: target, error: message });
+          })
+          .then(function () { setLinkBusy(false); });
+      }
+
       function handleFiles(files) {
         if (files === null || files === undefined || files.length === 0) return;
         var file = files[0];
@@ -2049,19 +2132,9 @@ window.__ModuleLoader__.load({
         }
         setBusy("upload");
         setError(null);
+        var openReader = libraryOpen === false;
         uploadFile(file)
-          .then(function (doc) {
-            return refreshLibrary().then(function () { return doc; });
-          })
-          .then(function (doc) {
-            showToast(t("imported"));
-            // Extracting text is silent and automatic; MinerU is an explicit switch in the reader.
-            startParse(doc.id, "markdown").then(function (state) {
-              applyParseState(state);
-              pollParse(doc.id);
-            }).catch(function () { /* a failed silent parse never blocks reading */ });
-            return openDoc(doc.id);
-          })
+          .then(function (doc) { return afterImport(doc, openReader); })
           .catch(function (errorValue) {
             setError(errorValue && errorValue.message ? errorValue.message : String(errorValue));
           })
@@ -2273,7 +2346,8 @@ window.__ModuleLoader__.load({
                   className: "pr-icon-btn" + (notesOpen && panelTab === "code" ? " pr-icon-btn-active" : "")
                 })
               : null,
-            iconButton("upload", t("upload"), function () { chooseFile(); }),
+            iconButton("upload", t("importLocal"), function () { chooseFile(); }),
+            iconButton("link", t("importLink"), function () { openLinkDialog(); }),
             meta !== null
               ? h(
                   "button",
@@ -2301,10 +2375,20 @@ window.__ModuleLoader__.load({
           h("div", { className: "pr-empty-title" }, t("emptyTitle")),
           h("div", { className: "pr-empty-desc" }, t("emptyDesc")),
           h(
-            "button",
-            { type: "button", className: "pr-btn pr-btn-primary", onClick: chooseFile },
-            h(Icon, { name: "upload", size: 14 }),
-            t("chooseFile")
+            "div",
+            { className: "pr-import-row" },
+            h(
+              "button",
+              { type: "button", className: "pr-btn pr-btn-primary", onClick: chooseFile },
+              h(Icon, { name: "upload", size: 14 }),
+              t("importLocal")
+            ),
+            h(
+              "button",
+              { type: "button", className: "pr-btn", onClick: openLinkDialog },
+              h(Icon, { name: "link", size: 14 }),
+              t("importLink")
+            )
           )
         );
       }
@@ -2389,8 +2473,14 @@ window.__ModuleLoader__.load({
             h(
               "button",
               { type: "button", className: "pr-btn pr-btn-primary pr-btn-small", onClick: chooseFile },
-              h(Icon, { name: "plus", size: 13 }),
-              t("uploadShort")
+              h(Icon, { name: "upload", size: 13 }),
+              t("importLocalShort")
+            ),
+            h(
+              "button",
+              { type: "button", className: "pr-btn pr-btn-small", onClick: openLinkDialog },
+              h(Icon, { name: "link", size: 13 }),
+              t("importLinkShort")
             ),
             iconButton("close", t("close"), function () { setLibraryOpen(false); })
           ),
@@ -3095,17 +3185,81 @@ window.__ModuleLoader__.load({
           "button",
           {
             type: "button",
-            key: "upload",
+            key: "import-local",
             className: "pr-menu-item",
             onClick: function () { setMoreOpen(false); chooseFile(); }
           },
           h(Icon, { name: "upload", size: 14 }),
-          t("upload")
+          t("importLocal")
+        ));
+        items.push(h(
+          "button",
+          {
+            type: "button",
+            key: "import-link",
+            className: "pr-menu-item",
+            onClick: openLinkDialog
+          },
+          h(Icon, { name: "link", size: 14 }),
+          t("importLink")
         ));
         return [
           h("div", { key: "shade", className: "pr-menu-shade", onClick: function () { setMoreOpen(false); } }),
           h("div", { key: "menu", className: "pr-menu" }, items)
         ];
+      }
+
+      function renderLinkDialog() {
+        if (linkDraft === null) return null;
+        var busyLink = linkBusy;
+        return h(
+          "div",
+          { className: "pr-modal-shade", onClick: closeLinkDialog },
+          h(
+            "div",
+            {
+              className: "pr-modal",
+              onClick: function (event) { event.stopPropagation(); }
+            },
+            h("div", { className: "pr-modal-title" }, t("linkTitle")),
+            h("input", {
+              className: "pr-input",
+              type: "text",
+              autoFocus: true,
+              spellCheck: false,
+              disabled: busyLink,
+              value: linkDraft.value,
+              placeholder: t("linkPlaceholder"),
+              onChange: function (event) { setLinkDraft({ value: event.target.value, error: "" }); },
+              onKeyDown: function (event) {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitLink();
+                } else if (event.key === "Escape") {
+                  closeLinkDialog();
+                }
+              }
+            }),
+            h("div", { className: "pr-modal-hint" }, busyLink ? t("linkDownloading") : t("linkHint")),
+            linkDraft.error ? h("div", { className: "pr-modal-error" }, linkDraft.error) : null,
+            h(
+              "div",
+              { className: "pr-modal-actions" },
+              h("button", {
+                type: "button",
+                className: "pr-btn",
+                disabled: busyLink,
+                onClick: closeLinkDialog
+              }, t("cancel")),
+              h("button", {
+                type: "button",
+                className: "pr-btn pr-btn-primary",
+                disabled: busyLink,
+                onClick: submitLink
+              }, h(Icon, { name: "link", size: 13 }), busyLink ? t("linkDownloading") : t("importLink"))
+            )
+          )
+        );
       }
 
       function renderAtHint() {
@@ -3351,6 +3505,7 @@ window.__ModuleLoader__.load({
         renderParseBar(),
         renderPagePill(),
         renderMoreMenu(),
+        renderLinkDialog(),
         renderSelectionPopup(),
         renderNoteEditor(),
         renderHlCard(),
@@ -3861,6 +4016,15 @@ window.__ModuleLoader__.load({
       ".pr-hl-card-btn{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:none;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer}",
       ".pr-hl-card-btn:hover{background:var(--dsw-alias-bg-layer-2)}",
       ".pr-hl-card-btn-danger{color:var(--dsw-alias-state-error-primary,#e5484d)}",
+      ".pr-import-row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}",
+      ".pr-modal-shade{position:absolute;inset:0;background:rgba(0,0,0,.42);z-index:100020;display:flex;align-items:center;justify-content:center;padding:18px}",
+      ".pr-modal{width:100%;max-width:420px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;box-shadow:0 18px 48px rgba(0,0,0,.45);padding:14px;display:flex;flex-direction:column;gap:9px}",
+      ".pr-modal-title{font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-primary)}",
+      ".pr-input{width:100%;box-sizing:border-box;padding:7px 9px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:12px;outline:none;font-family:inherit}",
+      ".pr-input:focus{border-color:var(--pr-accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--pr-accent) 26%,transparent)}",
+      ".pr-modal-hint{font-size:10.5px;line-height:1.5;color:var(--dsw-alias-label-secondary)}",
+      ".pr-modal-error{font-size:10.5px;line-height:1.5;color:var(--dsw-alias-state-error-primary);word-break:break-word}",
+      ".pr-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}",
       ".pr-toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);max-width:calc(100% - 24px);background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary);font-size:11.5px;line-height:1.5;padding:7px 12px;border-radius:8px;box-shadow:0 8px 26px rgba(0,0,0,.35);z-index:7;text-align:center;pointer-events:none}",
       ".pr-drop{position:absolute;inset:8px;z-index:50;border:2px dashed var(--pr-accent);border-radius:12px;background:var(--dsw-alias-bg-overlay);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--dsw-alias-label-primary);font-size:13px;pointer-events:none;opacity:.96}",
       ".pr-file-input{display:none}",
