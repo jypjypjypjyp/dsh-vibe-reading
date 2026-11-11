@@ -67,7 +67,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 | `client.js` | Client：向 `ctx.betterSidebar` 注册 `vibe-reading` tab（阅读器、标注/代码面板），并向 `plugins.detail.section` 注册插件页里的「阅读器设置」 |
 | `public/` | vendored pdf.js 3.11（`pdf.min.js`、worker、cmaps、standard_fonts），Apache-2.0，许可证见 `public/LICENSE-pdfjs.txt` |
 
-存储：「全局」模式下内部库是 `~/.dsh/vibe-reading/`（`<uuid>.pdf` 原件、`<uuid>.json` 元数据、`settings.json` 设置），论文文件夹在设置里的工作目录（默认 `~/.vibe_reading/<论文名>/`）；「跟随工作区」模式下两者都进 `<工作区>/.vibe_reading/`，索引文件在 `store/`、论文文件夹在 `papers/<论文名>/`。论文文件夹按 `pdf/` 原件、`markdown/` 解析结果（可能带 `images/`）、`remote/` 开源实现、`local/` 本地复现分开放，标注与笔记统一写 `notes.md`、元信息写 `meta.md`。
+存储：「全局」模式下内部库是 `~/.dsh/vibe-reading/`（`<uuid>.pdf` 原件、`<uuid>.json` 元数据、`settings.json` 设置），论文文件夹在设置里的工作目录（默认 `~/.vibe_reading/<论文名>/`）；「跟随工作区」模式下两者都进 `<工作区>/.vibe_reading/`，索引文件在 `store/`、论文文件夹在 `papers/<论文名>/`。论文文件夹按 `pdf/` 原件（与库里的 `<uuid>.pdf` 是同一个文件的硬链接，不额外占盘）、`markdown/` 解析结果（可能带 `images/`）、`remote/` 开源实现、`local/` 本地复现分开放，标注与笔记统一写 `notes.md`、元信息写 `meta.md`。
 
 ## 批注工具
 

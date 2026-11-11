@@ -15,8 +15,8 @@
  */
 import { spawn } from 'node:child_process'
 import { createReadStream, existsSync } from 'node:fs'
-import { appendFile, cp, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { appendFile, cp, link, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, delimiter, dirname, extname, join, resolve, sep } from 'node:path'
 import { inflateRawSync } from 'node:zlib'
@@ -716,6 +716,59 @@ async function relocatePaper(meta, id) {
   return to
 }
 
+/** Put the paper's bytes at `dst` without paying for them twice when we can. */
+async function linkOrCopy(src, dst) {
+  try {
+    await link(src, dst)
+  } catch {
+    await cp(src, dst, { force: true })
+  }
+}
+
+async function sha1(file) {
+  const hash = createHash('sha1')
+  await new Promise((settle, fail) => {
+    createReadStream(file)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('end', () => settle(undefined))
+      .on('error', fail)
+  })
+  return hash.digest('hex')
+}
+
+/** Replace paper-folder pdf copies with hard links to the stored copy. */
+async function compactPaperCopies() {
+  await refreshIndex(true)
+  const linked = []
+  let bytes = 0
+  for (const id of paperDirs.keys()) {
+    const meta = await readMeta(id).catch(() => undefined)
+    if (meta === undefined || meta.workDir === '') continue
+    let dirs = []
+    try {
+      dirs = (await readdir(join(meta.workDir, 'pdf'))).filter((name) => name.toLowerCase().endsWith('.pdf'))
+    } catch {
+      continue
+    }
+    const src = pdfPath(id)
+    for (const name of dirs) {
+      const dst = join(meta.workDir, 'pdf', name)
+      try {
+        const [a, b] = [await stat(src), await stat(dst)]
+        if (a.ino === b.ino || a.size !== b.size) continue
+        if ((await sha1(src)) !== (await sha1(dst))) continue
+        await unlink(dst)
+        await link(src, dst)
+        bytes += a.size
+        linked.push({ id, name })
+      } catch {
+        /* keep the copy when anything is off */
+      }
+    }
+  }
+  return { linked, bytes }
+}
+
 async function paperFolder(id) {
   const meta = await readMeta(id)
   const settings = await readSettings()
@@ -744,7 +797,7 @@ async function paperFolder(id) {
   const fileName = rawName === '' ? 'paper.pdf' : rawName.toLowerCase().endsWith('.pdf') ? rawName : `${rawName}.pdf`
   const pdfTarget = join(pdfDir, fileName)
   const existing = await stat(pdfTarget).catch(() => undefined)
-  if (existing === undefined) await cp(pdfPath(id), pdfTarget, { force: true })
+  if (existing === undefined) await linkOrCopy(pdfPath(id), pdfTarget)
 
   if (meta.workDir !== dir) {
     meta.workDir = dir
@@ -1925,6 +1978,20 @@ async function handleApi(req, res, url, fence) {
       sendJson(res, 200, { ok: true, folder: await paperBrief(id) })
     } catch {
       sendError(res, 404, 'paper not found', 'not-found')
+    }
+    return true
+  }
+
+  if (pathname === '/vibe-reading/api/compact') {
+    if (req.method !== 'POST') {
+      sendError(res, 405, 'method not allowed', 'method-error')
+      return true
+    }
+    try {
+      const result = await compactPaperCopies()
+      sendJson(res, 200, { ok: true, linked: result.linked.length, bytes: result.bytes })
+    } catch (error) {
+      sendError(res, 500, error?.message ?? String(error), 'compact-failed')
     }
     return true
   }
