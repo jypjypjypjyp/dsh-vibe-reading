@@ -38,7 +38,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 
 1. 打开右侧边栏，点 `+`，选「Vibe Reading」。
 2. 导入论文有三条路：工具栏的「本地导入」选文件、把 PDF 拖进面板、或「链接导入」粘贴地址（PDF 直链，或 arXiv 的 `abs` / `pdf` 链接，`abs` 会自动换成 `pdf`）。导入后静默用 markitdown 转一份 Markdown；「更多 → 解析正文（MinerU）」会中断它、改用 MinerU（要 Token），底部进度条实时走。
-3. 选中正文文字，使用浮出菜单；工具栏的 `</>` 打开「代码」页，`@` 把 `/dsh-vibe-reading` 与论文目录写进输入框，`⋯` 里有「解析正文（MinerU）」与「设置」。
+3. 选中正文文字，浮出菜单里可以高亮、笔记、直接提问，或「翻译」——把这一段交给模型译出来，不带上文，浮窗里能换个方向再译一次；工具栏的 `</>` 打开「代码」页，`@` 把 `/dsh-vibe-reading` 与论文目录写进输入框，`⋯` 里有「解析正文（MinerU）」与「设置」。
 4. 面板三栏：**标注**（挂在某页某段原文上的高亮与批注，第二行显示它的笔记）、**笔记**（论文级的分块结论，可多条，随时增删改）、**代码**（再分「开源仓库 / 本地复现仓库」两个页签，各有目录浏览）。
 
 论文存储有两种模式，在设置里切换：「全局」把所有工作区的论文放进同一个默认库；「跟随工作区」把论文放进它所属工作区的 `.vibe_reading/store/`（论文文件夹在同一个 `.vibe_reading/papers/<论文名>/`），导入时把来源工作区记进元数据，论文库卡片上标出归属。
@@ -56,6 +56,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 | 链接导入 | 你粘贴的 URL | 只下载这一个 PDF，不发送本地内容 |
 | 解析正文（MinerU） | `https://mineru.net` | 把这一篇 PDF 上传解析，返回 Markdown 与图片；用你的 Token |
 | AI 找开源 / 克隆代码 | 你确认的仓库地址 | `git clone --depth 1` 到论文文件夹的 `remote/` |
+| 翻译 | 当前会话用的模型服务 | 只发选中的那一段文字，不带论文上下文 |
 
 另外首次本地解析会执行一次 `uvx --from markitdown[pdf] markitdown`，从 PyPI 取 markitdown 并缓存，之后不再下载。MinerU Token 只写在本机 `~/.dsh/vibe-reading/settings.json`，接口只回显后四位，不写入论文数据、日志或仓库。
 

@@ -1982,6 +1982,37 @@ async function handleApi(req, res, url, fence) {
     return true
   }
 
+  if (pathname === '/vibe-reading/api/translate') {
+    if (req.method !== 'POST') {
+      sendError(res, 405, 'method not allowed', 'method-error')
+      return true
+    }
+    let body
+    try {
+      body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8') || '{}')
+    } catch {
+      sendError(res, 400, 'body must be JSON', 'bad-body')
+      return true
+    }
+    const text = typeof body.text === 'string' ? body.text.trim() : ''
+    if (text === '') {
+      sendError(res, 400, 'nothing to translate', 'empty-text')
+      return true
+    }
+    if (text.length > 6000) {
+      sendError(res, 413, 'selection too long (6000 characters max)', 'too-long')
+      return true
+    }
+    const target = body.target === 'en' ? 'en' : 'zh'
+    try {
+      const result = await translatePassage(text, target)
+      sendJson(res, 200, { ok: true, text: result.text, target, provider: result.provider, model: result.model })
+    } catch (error) {
+      sendError(res, Number.isInteger(error?.status) ? error.status : 500, error?.message ?? String(error), 'translate-failed')
+    }
+    return true
+  }
+
   if (pathname === '/vibe-reading/api/compact') {
     if (req.method !== 'POST') {
       sendError(res, 405, 'method not allowed', 'method-error')
@@ -2657,8 +2688,55 @@ function registerPaperSkill(ctx) {
 
 // ── plugin body ──────────────────────────────────────────────────────────────
 
+
+/** Handles for the one-shot translation call; filled while the plugin mounts. */
+let llmService = null
+let defaultModelService = null
+
+const TRANSLATE_SYSTEM = {
+  zh: '你翻译学术论文。把用户给的这段文字译成简体中文，只输出译文本身：不要解释、不要加引号、不要保留原文。公式、变量名、代码标识符、引用编号原样保留；术语用领域通行译法。',
+  en: 'You translate research papers. Turn the user text into English and output the translation only: no explanation, no quotes, no source text. Keep formulas, variable names, code identifiers and citation numbers as they are; use the field’s usual terminology.',
+}
+
+/** Translate one passage with the model the session already uses. */
+async function translatePassage(text, target) {
+  if (llmService === null) throw Object.assign(new Error('model service unavailable'), { status: 503 })
+  if (defaultModelService === null) throw Object.assign(new Error('no default model configured'), { status: 503 })
+  const selection = defaultModelService.currentSelection()
+  if (selection === null || selection === undefined) {
+    throw Object.assign(new Error('no default model configured'), { status: 503 })
+  }
+  let out = ''
+  let failure = null
+  for await (const chunk of llmService.stream({
+    provider: selection.provider,
+    model: selection.model,
+    system: TRANSLATE_SYSTEM[target],
+    messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+    maxTokens: 2000,
+    signal: AbortSignal.timeout(60_000),
+  })) {
+    if (chunk.type === 'text-delta') out += chunk.text
+    else if (chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
+      failure = chunk.reason.failure
+    }
+  }
+  if (failure !== null) {
+    throw Object.assign(new Error(failure?.message ?? 'model call failed'), { status: 502 })
+  }
+  const value = out.trim()
+  if (value === '') throw Object.assign(new Error('empty translation'), { status: 502 })
+  return { text: value, provider: selection.provider, model: selection.model }
+}
+
 export function apply(ctx) {
   const trustedHosts = ctx.webStartup.trustedHosts ?? []
+  ctx.inject(['llm'], (scoped) => {
+    llmService = scoped.llm
+  })
+  ctx.inject(['agentDefaultModel'], (scoped) => {
+    defaultModelService = scoped.agentDefaultModel
+  })
   registerAnnotationTool(ctx)
   registerPaperSkill(ctx)
   ctx.effect(() => ctx.webServer.register({
