@@ -665,7 +665,12 @@ async function startClone(id) {
 /** Shallow clone into the paper's code folder. */
 function cloneInto(repo, target) {
   return new Promise((resolveClone, rejectClone) => {
-    const child = spawn('git', ['clone', '--depth', '1', repo, target], { stdio: ['ignore', 'ignore', 'pipe'] })
+    // Only http(s): a leading dash would otherwise be read as a git option.
+    if (typeof repo !== 'string' || !/^https?:\/\//i.test(repo.trim())) {
+      rejectClone(new Error('repo must be an http(s) URL'))
+      return
+    }
+    const child = spawn('git', ['clone', '--depth', '1', '--', repo.trim(), target], { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
