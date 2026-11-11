@@ -49,6 +49,10 @@ const MAX_NOTE_CHARS = 2000
 /** Settings file next to the papers; it never leaves this machine. */
 const SETTINGS_PATH = join(STORE_DIR, 'settings.json')
 const DEFAULT_SETTINGS = {
+  /** 'global' keeps every paper in STORE_DIR; 'workspace' puts new ones in <workspace>/.vibe_reading. */
+  storage: 'global',
+  /** Workspace directories that already own a .vibe_reading folder. */
+  workspaceRoots: [],
   workRoot: join(homedir(), '.paper_reading'),
   mineruApiKey: '',
   mineruModel: 'vlm',
@@ -258,12 +262,62 @@ function expandHome(path) {
   return path.startsWith('~/') ? join(homedir(), path.slice(2)) : path
 }
 
+/** id -> directory holding that paper's pdf/json; filled by refreshIndex(). */
+const paperDirs = new Map()
+let indexStamp = 0
+
+function storeOf(id) {
+  return paperDirs.get(id) ?? STORE_DIR
+}
+
 function pdfPath(id) {
-  return join(STORE_DIR, `${id}.pdf`)
+  return join(storeOf(id), `${id}.pdf`)
 }
 
 function metaPath(id) {
-  return join(STORE_DIR, `${id}.json`)
+  return join(storeOf(id), `${id}.json`)
+}
+
+/** A workspace's own store keeps its pdf/json one level in, so the folder stays readable. */
+function storeDirFor(workspacePath) {
+  return join(workspacePath, '.vibe_reading', 'store')
+}
+
+/** Entries may name a workspace or its .vibe_reading directory; both mean the workspace. */
+function workspaceOf(root) {
+  return root.endsWith(`${sep}.vibe_reading`) ? dirname(root) : root
+}
+
+/** Every directory that may hold papers: the global store plus known workspaces. */
+async function storeRoots() {
+  const settings = await readSettings()
+  const roots = [STORE_DIR]
+  const legacy = []
+  for (const root of settings.workspaceRoots) {
+    const workspace = workspaceOf(root)
+    roots.push(storeDirFor(workspace))
+    // Papers moved by earlier versions sit directly in .vibe_reading; read them too.
+    legacy.push(join(workspace, '.vibe_reading'))
+  }
+  return { roots: Array.from(new Set(roots)), legacy: Array.from(new Set(legacy)) }
+}
+
+async function refreshIndex(force) {
+  const now = Date.now()
+  if (force !== true && now - indexStamp < 1200) return
+  indexStamp = now
+  const { roots, legacy } = await storeRoots()
+  const seen = new Set()
+  for (const root of [...roots, ...legacy]) {
+    const names = await readdir(root).catch(() => [])
+    for (const entry of names) {
+      if (!entry.endsWith('.json')) continue
+      const id = entry.slice(0, -'.json'.length)
+      if (!ID_RE.test(id) || seen.has(id)) continue
+      seen.add(id)
+      paperDirs.set(id, root)
+    }
+  }
 }
 
 async function ensureStore() {
@@ -271,6 +325,7 @@ async function ensureStore() {
 }
 
 async function readMeta(id) {
+  if (!paperDirs.has(id)) await refreshIndex(true)
   const text = await readFile(metaPath(id), 'utf8')
   const meta = JSON.parse(text)
   return normalizeMeta(meta, id)
@@ -294,8 +349,16 @@ function normalizeMeta(meta, id) {
       ? meta.keywords.filter((word) => typeof word === 'string' && word.trim() !== '').map((word) => word.trim().slice(0, 24)).slice(0, 8)
       : [],
     workDir: typeof meta.workDir === 'string' ? meta.workDir.slice(0, 4000) : '',
+    store: typeof meta.store === 'string' ? meta.store.slice(0, 4000) : '',
+    workspace: normalizeWorkspace(meta.workspace),
     parse: normalizeParse(meta.parse),
   }
+}
+
+function normalizeWorkspace(raw) {
+  const value = raw !== null && typeof raw === 'object' ? raw : {}
+  const path = typeof value.path === 'string' ? value.path.slice(0, 4000) : ''
+  return { path, name: typeof value.name === 'string' ? value.name.slice(0, 120) : '' }
 }
 
 function normalizeCode(raw) {
@@ -445,6 +508,9 @@ function summaryOf(meta) {
     parseStatus: meta.parse.status,
     codeRepo: meta.code.repo,
     keywords: meta.keywords,
+    workspacePath: meta.workspace.path,
+    workspaceName: meta.workspace.name,
+    storage: meta.store !== '' && meta.store !== STORE_DIR ? 'workspace' : 'global',
   }
 }
 
@@ -456,16 +522,32 @@ async function writeMeta(meta) {
   await rename(temp, target)
 }
 
+/** Workspaces that either hold papers or are registered as a store location. */
+async function listWorkspaces() {
+  const settings = await readSettings()
+  const docs = await listLibrary()
+  const found = new Map()
+  for (const root of settings.workspaceRoots) {
+    const workspace = workspaceOf(root)
+    found.set(workspace, { path: workspace, name: basename(workspace), count: 0 })
+  }
+  for (const doc of docs) {
+    if (doc.workspacePath === '') continue
+    const entry = found.get(doc.workspacePath) ?? { path: doc.workspacePath, name: doc.workspaceName, count: 0 }
+    entry.count += 1
+    found.set(doc.workspacePath, entry)
+  }
+  return Array.from(found.values()).sort((a, b) => a.name.localeCompare(b.name))
+}
+
 async function listLibrary() {
   await ensureStore()
-  const names = await readdir(STORE_DIR).catch(() => [])
+  await refreshIndex(true)
   const docs = []
-  for (const entry of names) {
-    if (!entry.endsWith('.json')) continue
-    const id = entry.slice(0, -'.json'.length)
-    if (!ID_RE.test(id)) continue
+  for (const [id, root] of paperDirs) {
     try {
-      docs.push(summaryOf(await readMeta(id)))
+      const text = await readFile(join(root, `${id}.json`), 'utf8')
+      docs.push(summaryOf(normalizeMeta(JSON.parse(text), id)))
     } catch {
       // A half-written or foreign JSON file is skipped, never fatal.
     }
@@ -481,6 +563,13 @@ async function readSettings() {
     const text = await readFile(SETTINGS_PATH, 'utf8')
     const stored = JSON.parse(text)
     const merged = { ...DEFAULT_SETTINGS }
+    if (stored.storage === 'workspace' || stored.storage === 'global') merged.storage = stored.storage
+    if (Array.isArray(stored.workspaceRoots)) {
+      merged.workspaceRoots = stored.workspaceRoots
+        .filter((value) => typeof value === 'string' && value.trim() !== '')
+        .map((value) => expandHome(value.trim()))
+        .slice(0, 40)
+    }
     if (typeof stored.workRoot === 'string' && stored.workRoot.trim() !== '') merged.workRoot = expandHome(stored.workRoot.trim())
     if (typeof stored.mineruApiKey === 'string') merged.mineruApiKey = stored.mineruApiKey.trim()
     if (['vlm', 'pipeline', 'MinerU-HTML'].includes(stored.mineruModel)) merged.mineruModel = stored.mineruModel
@@ -493,6 +582,14 @@ async function readSettings() {
 
 async function writeSettings(patch) {
   const current = await readSettings()
+  if (patch.storage === 'workspace' || patch.storage === 'global') current.storage = patch.storage
+  if (Array.isArray(patch.workspaceRoots)) {
+    const listed = patch.workspaceRoots
+      .filter((value) => typeof value === 'string' && value.trim() !== '')
+      .map((value) => workspaceOf(expandHome(value.trim())))
+    // Workspace paths only: the .vibe_reading layout is derived, never stored.
+    current.workspaceRoots = Array.from(new Set(listed)).slice(0, 40)
+  }
   if (typeof patch.workRoot === 'string' && patch.workRoot.trim() !== '') current.workRoot = expandHome(patch.workRoot.trim())
   if (typeof patch.mineruApiKey === 'string') current.mineruApiKey = patch.mineruApiKey.trim()
   if (['vlm', 'pipeline', 'MinerU-HTML'].includes(patch.mineruModel)) current.mineruModel = patch.mineruModel
@@ -508,6 +605,8 @@ async function writeSettings(patch) {
 function publicSettings(settings) {
   const key = settings.mineruApiKey
   return {
+    storage: settings.storage,
+    workspaceRoots: settings.workspaceRoots,
     workRoot: settings.workRoot,
     mineruModel: settings.mineruModel,
     mineruLang: settings.mineruLang,
@@ -585,10 +684,48 @@ function cloneInto(repo, target) {
   })
 }
 
+/** Move one paper (store files + folder) to the store its workspace implies. */
+async function relocatePaper(meta, id) {
+  const settings = await readSettings()
+  const from = storeOf(id)
+  const to = targetDirFor(meta, settings.storage, meta.workspace.path)
+  if (to !== from) {
+    await mkdir(to, { recursive: true })
+    await movePath(join(from, `${id}.pdf`), join(to, `${id}.pdf`))
+    await movePath(join(from, `${id}.json`), join(to, `${id}.json`))
+    paperDirs.set(id, to)
+    meta.store = to
+  }
+  const root = meta.workspace.path !== ''
+    ? join(meta.workspace.path, '.vibe_reading', 'papers')
+    : settings.workRoot
+  const dir = join(root, slugOf(meta))
+  if (meta.workDir !== '' && meta.workDir !== dir && existsSync(meta.workDir) && !existsSync(dir)) {
+    await mkdir(root, { recursive: true })
+    await movePath(meta.workDir, dir).catch(() => {})
+  }
+  meta.workDir = existsSync(dir) ? dir : ''
+  meta.updatedAt = Date.now()
+  await writeMeta(meta)
+  indexStamp = 0
+  return to
+}
+
 async function paperFolder(id) {
   const meta = await readMeta(id)
   const settings = await readSettings()
-  const dir = meta.workDir !== '' ? meta.workDir : join(settings.workRoot, slugOf(meta))
+  const root = meta.workspace.path !== ''
+    ? join(meta.workspace.path, '.vibe_reading', 'papers')
+    : settings.workRoot
+  const slug = slugOf(meta)
+  const dir = join(root, slug)
+  // A folder recorded elsewhere — or left in the global work root — follows the paper.
+  for (const candidate of [meta.workDir, join(settings.workRoot, slug)]) {
+    if (candidate === '' || candidate === dir || !existsSync(candidate) || existsSync(dir)) continue
+    await mkdir(root, { recursive: true })
+    await movePath(candidate, dir).catch(() => {})
+    break
+  }
   const pdfDir = join(dir, 'pdf')
   const mdDir = join(dir, 'markdown')
   const remoteDir = join(dir, 'remote')
@@ -1220,10 +1357,138 @@ async function installSidebar() {
 }
 
 /** Write one PDF and its metadata; both the local upload and the link import land here. */
-async function storePdf(bytes, fileName, requestedTitle) {
+/** Live migration of the paper store between the two storage modes. */
+const migration = {
+  running: false,
+  total: 0,
+  done: 0,
+  skipped: 0,
+  failed: 0,
+  from: '',
+  to: '',
+  error: '',
+  startedAt: 0,
+  finishedAt: 0,
+}
+
+async function movePath(from, to) {
+  await mkdir(dirname(to), { recursive: true })
+  try {
+    await rename(from, to)
+  } catch (error) {
+    if (error?.code !== 'EXDEV') throw error
+    await cp(from, to, { recursive: true })
+    await rm(from, { recursive: true, force: true })
+  }
+}
+
+/** Target directory for a paper under `mode`, falling back to the import workspace. */
+function targetDirFor(meta, mode, cwd) {
+  if (mode !== 'workspace') return STORE_DIR
+  const workspace = meta.workspace.path !== '' ? meta.workspace.path : cwd
+  return workspace === '' ? STORE_DIR : storeDirFor(workspace)
+}
+
+
+
+async function placeFor(cwd) {
+  const settings = await readSettings()
+  const clean = typeof cwd === 'string' && cwd.trim() !== '' ? resolve(expandHome(cwd.trim())) : ''
+  const workspace = clean === '' ? { path: '', name: '' } : { path: clean, name: basename(clean) }
+  if (settings.storage !== 'workspace' || clean === '') return { dir: STORE_DIR, workspace }
+  await rememberWorkspaceRoot(clean)
+  return { dir: storeDirFor(clean), workspace }
+}
+
+async function rememberWorkspaceRoot(path) {
+  const settings = await readSettings()
+  const listed = Array.from(new Set([...settings.workspaceRoots.map((root) => workspaceOf(root)), path]))
+  const collapsed = listed.filter((root) => !listed.some((other) => other !== root && root.startsWith(`${other}${sep}`)))
+  if (collapsed.length === settings.workspaceRoots.length && collapsed.every((root, i) => root === settings.workspaceRoots[i])) return
+  await writeSettings({ workspaceRoots: collapsed })
+}
+
+/**
+ * Move every paper into the folder layout of `mode`, one paper at a time so the
+ * caller can show progress. Nothing is deleted: a failed move is counted and left
+ * in place. The mode itself only flips once every paper has been handled.
+ */
+async function migrateStorage(mode, cwd) {
+  if (migration.running) throw Object.assign(new Error('a migration is already running'), { status: 409 })
+  Object.assign(migration, {
+    running: true,
+    total: 0,
+    done: 0,
+    skipped: 0,
+    failed: 0,
+    from: (await readSettings()).storage,
+    to: mode,
+    error: '',
+    startedAt: Date.now(),
+    finishedAt: 0,
+  })
+  try {
+    const settings = await readSettings()
+    // The target workspace counts as a store even before anything moved there.
+    if (mode === 'workspace' && cwd !== '') await rememberWorkspaceRoot(cwd)
+    await refreshIndex(true)
+    const workRoot = settings.workRoot
+    const plan = []
+    for (const [id, from] of paperDirs) {
+      if (!ID_RE.test(id)) continue
+      let meta
+      try {
+        meta = await readMeta(id)
+      } catch {
+        continue
+      }
+      const to = targetDirFor(meta, mode, cwd)
+      const folder = mode === 'workspace' ? join(dirname(to), 'papers', slugOf(meta)) : join(workRoot, slugOf(meta))
+      if (to !== from || (meta.workDir !== '' && folder !== meta.workDir)) plan.push({ id, from, to, folder, meta })
+    }
+    migration.total = plan.length
+    for (const step of plan) {
+      try {
+        if (step.to !== step.from) {
+          await movePath(join(step.from, `${step.id}.pdf`), join(step.to, `${step.id}.pdf`))
+          await movePath(join(step.from, `${step.id}.json`), join(step.to, `${step.id}.json`))
+          paperDirs.set(step.id, step.to)
+        }
+        // A recorded folder may already be gone; it never blocks the paper's move.
+        if (step.meta.workDir !== '' && step.folder !== step.meta.workDir && existsSync(step.meta.workDir)) {
+          await movePath(step.meta.workDir, step.folder).catch(() => {})
+        }
+        step.meta.store = step.to
+        if (mode === 'workspace' && step.meta.workspace.path === '' && cwd !== '') {
+          step.meta.workspace = normalizeWorkspace({ path: cwd, name: basename(cwd) })
+        }
+        if (step.meta.workDir !== '') step.meta.workDir = existsSync(step.folder) ? step.folder : ''
+        // Written into the new directory, so a half-moved paper stays readable.
+        step.meta.updatedAt = Date.now()
+        await writeMeta(step.meta)
+        migration.done += 1
+      } catch (error) {
+        migration.failed += 1
+        migration.error = error?.message ?? String(error)
+      }
+    }
+    if (migration.failed === 0) await writeSettings({ storage: mode })
+    indexStamp = 0
+  } catch (error) {
+    migration.error = error?.message ?? String(error)
+  } finally {
+    migration.running = false
+    migration.finishedAt = Date.now()
+  }
+  return migration
+}
+
+async function storePdf(bytes, fileName, requestedTitle, place) {
   const id = randomUUID()
-  await ensureStore()
-  await writeFile(pdfPath(id), bytes)
+  const target = place !== undefined && typeof place.dir === 'string' ? place.dir : STORE_DIR
+  await mkdir(target, { recursive: true })
+  paperDirs.set(id, target)
+  await writeFile(join(target, `${id}.pdf`), bytes)
   const now = Date.now()
   const title = (requestedTitle.trim() || fileName.replace(/\.pdf$/i, '')).slice(0, 300) || 'paper.pdf'
   const meta = normalizeMeta({
@@ -1236,6 +1501,8 @@ async function storePdf(bytes, fileName, requestedTitle) {
     lastPage: 1,
     scrollRatio: 0,
     annotations: [],
+    store: target,
+    workspace: place === undefined ? undefined : place.workspace,
   }, id)
   await writeMeta(meta)
   return meta
@@ -1325,10 +1592,12 @@ async function deletePaper(id) {
   } catch {
     throw Object.assign(new Error(`no such paper: ${id}`), { status: 404 })
   }
+  const dir = storeOf(id)
   stopParse(id, 'deleted')
-  await unlink(pdfPath(id)).catch(() => {})
-  await unlink(metaPath(id)).catch(() => {})
-  await rm(join(STORE_DIR, `${id}.md`), { recursive: true, force: true }).catch(() => {})
+  await unlink(join(dir, `${id}.pdf`)).catch(() => {})
+  await unlink(join(dir, `${id}.json`)).catch(() => {})
+  await rm(join(dir, `${id}.md`), { recursive: true, force: true }).catch(() => {})
+  paperDirs.delete(id)
   if (meta.workDir !== '') await rm(meta.workDir, { recursive: true, force: true }).catch(() => {})
   return meta
 }
@@ -1363,6 +1632,19 @@ async function handleApi(req, res, url, fence) {
     return true
   }
 
+  if (pathname === '/vibe-reading/api/workspaces') {
+    if (req.method !== 'GET') {
+      sendError(res, 405, 'method not allowed', 'method-error')
+      return true
+    }
+    sendJson(res, 200, {
+      ok: true,
+      storage: (await readSettings()).storage,
+      workspaces: await listWorkspaces()
+    })
+    return true
+  }
+
   if (pathname === '/vibe-reading/api/library') {
     if (req.method !== 'GET') {
       sendError(res, 405, 'method not allowed', 'method-error')
@@ -1387,7 +1669,8 @@ async function handleApi(req, res, url, fence) {
     const requestedName = url.searchParams.get('name') ?? ''
     const fileName = requestedName.trim().slice(0, 300) || 'paper.pdf'
     const requestedTitle = (url.searchParams.get('title') ?? '').trim()
-    const meta = await storePdf(body, fileName, requestedTitle)
+    const place = await placeFor(url.searchParams.get('cwd') ?? '')
+    const meta = await storePdf(body, fileName, requestedTitle, place)
     sendJson(res, 201, { ok: true, doc: summaryOf(meta) })
     return true
   }
@@ -1416,7 +1699,8 @@ async function handleApi(req, res, url, fence) {
       sendError(res, error?.status ?? 502, error?.message ?? String(error), 'download-failed')
       return true
     }
-    const meta = await storePdf(fetched.bytes, fetched.fileName, titleFromUrl(target))
+    const place = await placeFor(typeof payload.cwd === 'string' ? payload.cwd : '')
+    const meta = await storePdf(fetched.bytes, fetched.fileName, titleFromUrl(target), place)
     sendJson(res, 201, { ok: true, doc: summaryOf(meta) })
     return true
   }
@@ -1474,6 +1758,13 @@ async function handleApi(req, res, url, fence) {
           .filter(Boolean)
       }
       if (body.code !== null && typeof body.code === 'object') meta.code = normalizeCode(body.code)
+      if (body.workspace !== undefined) {
+        const next = normalizeWorkspace(body.workspace)
+        if (next.path !== meta.workspace.path) {
+          meta.workspace = next
+          await relocatePaper(meta, id)
+        }
+      }
       meta.updatedAt = Date.now()
       await writeMeta(meta)
       if (Array.isArray(body.annotations) || Array.isArray(body.paperNotes)) await syncPaperNotes(meta)
@@ -1527,6 +1818,38 @@ async function handleApi(req, res, url, fence) {
     return true
   }
 
+  if (pathname === '/vibe-reading/api/storage/migrate') {
+    if (req.method === 'GET') {
+      sendJson(res, 200, { ok: true, migration })
+      return true
+    }
+    if (req.method !== 'POST') {
+      sendError(res, 405, 'method not allowed', 'method-error')
+      return true
+    }
+    let payload
+    try {
+      payload = JSON.parse((await readBody(req, MAX_META_BODY)).toString('utf8') || '{}')
+    } catch {
+      sendError(res, 400, 'invalid JSON', 'bad-json')
+      return true
+    }
+    const mode = payload.storage === 'workspace' ? 'workspace' : 'global'
+    try {
+      const done = await migrateStorage(mode, typeof payload.cwd === 'string' ? payload.cwd : '')
+      sendJson(res, 200, { ok: done.failed === 0, migration: done })
+    } catch (error) {
+      sendError(res, error?.status ?? 500, error?.message ?? String(error), 'migrate-failed')
+    }
+    return true
+  }
+
+  // A running migration owns every file under the paper folders.
+  if (migration.running && !pathname.startsWith('/vibe-reading/static')) {
+    sendError(res, 409, 'storage migration in progress', 'migrating')
+    return true
+  }
+
   if (pathname === '/vibe-reading/api/settings') {
     if (req.method === 'GET') {
       sendJson(res, 200, { ok: true, settings: publicSettings(await readSettings()) })
@@ -1534,6 +1857,11 @@ async function handleApi(req, res, url, fence) {
     }
     if (req.method === 'PATCH') {
       const body = JSON.parse((await readBody(req, 64 * 1024)).toString('utf8') || '{}')
+      // The storage mode moves files; it only changes through /storage/migrate.
+      if (body.storage !== undefined) {
+        sendError(res, 409, 'change storage through /vibe-reading/api/storage/migrate', 'use-migrate')
+        return true
+      }
       const next = await writeSettings(body)
       sendJson(res, 200, { ok: true, settings: publicSettings(next) })
       return true
@@ -1766,6 +2094,9 @@ function normalizeKeywords(value) {
 }
 
 async function runAnnotationTool(args, exec) {
+  if (migration.running) {
+    throw Object.assign(new Error('storage migration in progress; retry when it finishes'), { status: 409 })
+  }
   const action = typeof args.action === 'string' ? args.action : 'list'
 
   if (action === 'import') {
@@ -1784,7 +2115,10 @@ async function runAnnotationTool(args, exec) {
     } else {
       throw Object.assign(new Error('import needs path (a local PDF file) or url'), { status: 400 })
     }
-    const meta = await storePdf(fetched.bytes, fetched.fileName, suggested)
+    const cwd = exec !== null && typeof exec === 'object'
+      ? (typeof exec.cwd === 'string' ? exec.cwd : (exec.session !== null && typeof exec.session === 'object' && typeof exec.session.cwd === 'string' ? exec.session.cwd : ''))
+      : ''
+    const meta = await storePdf(fetched.bytes, fetched.fileName, suggested, await placeFor(cwd))
     return { ok: true, doc: summaryOf(meta) }
   }
 
@@ -2153,7 +2487,7 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 - \`local/\`：本地复现代码（论文没开源、或自己想改一版时放这里），默认空。
 - \`pdf/\`：原始 PDF。
 
-\`vibe_reading (action="list", docId)\` 返回的 \`paths\` 指向这些位置。
+\`vibe_reading (action="list", docId)\` 返回的 \`paths\` 指向这些位置；论文可能放在全局库，也可能在当前工作区的 \`.vibe_reading/\`（设置里的「跟随工作区」），以 paths 为准。
 
 ## 一、先查已读，再决定读不读
 
@@ -2177,6 +2511,7 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 
 读 \`paths.markdown\`；没有 markdown 就提示用户在阅读器里点解析，或按 PDF 页读。
 要看实现：先 \`ls remote/\`，空就看 \`local/\`；两边都空只说明还没人放代码，别当成论文没有实现。
+  论文有开源实现时用 \`action="code"\` 把仓库地址写进 meta（\`repo\`）；克隆到 \`remote/\` 由阅读器面板的「克隆」按钮发起，不要手动往 \`remote/\` 里拷文件。
 按节推进：摘要 → 引言 → 方法 → 实验 → 局限与结论。**每节读完立刻落标注**，不要攒到最后一起写。
 关键图（架构图、主结果、消融）在 \`markdown/images/\` 里，读到图所在小节时单独看一遍再标；公式与表格的数字直接引用原文。
 
@@ -2189,7 +2524,8 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 - 覆盖面：每节 1–3 条；方法的关键步骤、实验的关键数字与对照组必须有。
 - 一条结论对应一条标注，不重复标同一处。
 
-一次用 \`items\` 提交 5–10 条，比一条一调省往返。
+一条用 \`action="create"\`；多条一次用 \`items\` 提交 5–10 条，比一条一调省往返。
+写错了用 \`action="update"\`（\`id\` + 要改的字段）；标错位置想丢掉，用 \`action="delete"\`（\`id\` + \`docId\`）删那一条。
 
 不标：目录、致谢、纯背景铺垫、同一结论的重复表述。
 
@@ -2209,7 +2545,7 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 
 每条 2–5 句。大笔记不是摘要：写判断与取舍，让没读过的人也能据此行动。
 标注与笔记都落进论文目录的 \`notes.md\`——那是这篇论文唯一的可读文档，别在别处再存一份。
-同一篇论文只有这一组，不要写第二遍；有新认识就 \`update_note\` 改对应的那块。
+同一篇论文只有这一组，不要写第二遍；有新认识就 \`update_note\` 改对应的那块，某块彻底作废用 \`delete_note\` 删掉，不要留空壳。
 
 ## 五、关键词与标题：让这篇论文可被认出
 

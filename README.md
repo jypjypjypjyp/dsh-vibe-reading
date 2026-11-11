@@ -41,7 +41,11 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 3. 选中正文文字，使用浮出菜单；工具栏的 `</>` 打开「代码」页，`@` 把 `/dsh-vibe-reading` 与论文目录写进输入框，`⋯` 里有「解析正文（MinerU）」与「设置」。
 4. 面板三栏：**标注**（挂在某页某段原文上的高亮与批注，第二行显示它的笔记）、**笔记**（论文级的分块结论，可多条，随时增删改）、**代码**（再分「开源仓库 / 本地复现仓库」两个页签，各有目录浏览）。
 
-设置（工作目录、MinerU Token、模型、语言）统一放在左侧「插件」→ `dsh-vibe-reading` 详情页，用 DSH 自带的设置表单渲染（`@deepseek-ai/dsh-client-ui-primitives` 的 `SettingsForm` / `SettingsValueField` / `SettingsSecretField`，与「网页搜索」等内置设置页同一套控件）；阅读器里的「设置」直接跳到那一页。
+论文存储有两种模式，在设置里切换：「全局」把所有工作区的论文放进同一个默认库；「跟随工作区」把论文放进它所属工作区的 `.vibe_reading/store/`（论文文件夹在同一个 `.vibe_reading/papers/<论文名>/`），导入时把来源工作区记进元数据，论文库卡片上标出归属。
+
+论文库里一次可以选中多篇（卡片左上角勾选框），底部出现批量条：**移动到…**把选中的论文连同文件与文件夹一起改归属（全局库或任一工作区），**批量删除**先弹确认再逐篇删。单篇的卡片右上角，垃圾桶旁边是归属按钮，点开同一个弹窗改它一个人。库顶部的下拉框按范围过滤：全部论文、全局库，或某个工作区（带篇数）；下面的搜索框按标题、关键词、工作区名即时过滤，Esc 清空。切模式会**迁移已有论文**：设置页里切换后先确认，再逐篇搬移（原文、元数据、论文文件夹一起走），设置页显示进度条；迁移期间插件的接口与 `vibe_reading` 工具一律返回 409，等它跑完再操作。迁移失败不会切换模式，文件留在原地。
+
+设置（论文存储、工作目录、MinerU Token、模型、语言）统一放在左侧「插件」→ `dsh-vibe-reading` 详情页，用 DSH 自带的设置表单渲染（`@deepseek-ai/dsh-client-ui-primitives` 的 `SettingsForm` / `SettingsValueField` / `SettingsSecretField`，与「网页搜索」等内置设置页同一套控件）；阅读器里的「设置」直接跳到那一页。
 
 ## 结构
 
@@ -51,7 +55,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 | `client.js` | Client：向 `ctx.betterSidebar` 注册 `vibe-reading` tab（阅读器、标注/代码面板），并向 `plugins.detail.section` 注册插件页里的「阅读器设置」 |
 | `public/` | vendored pdf.js 3.11（`pdf.min.js`、worker、cmaps、standard_fonts），Apache-2.0，许可证见 `public/LICENSE-pdfjs.txt` |
 
-存储：`~/.dsh/vibe-reading/` 是内部库（`<uuid>.pdf` 原件、`<uuid>.json` 元数据、`settings.json` 设置）；对外的论文文件夹在 `~/.paper_reading/<论文名>/`，按 `pdf/` 原件、`markdown/` 解析结果（可能带 `images/`）、`remote/` 开源实现、`local/` 本地复现分开放，标注与笔记统一写 `notes.md`、元信息写 `meta.md`。
+存储：「全局」模式下内部库是 `~/.dsh/vibe-reading/`（`<uuid>.pdf` 原件、`<uuid>.json` 元数据、`settings.json` 设置），论文文件夹在设置里的工作目录（默认 `~/.vibe_reading/<论文名>/`）；「跟随工作区」模式下两者都进 `<工作区>/.vibe_reading/`，索引文件在 `store/`、论文文件夹在 `papers/<论文名>/`。论文文件夹按 `pdf/` 原件、`markdown/` 解析结果（可能带 `images/`）、`remote/` 开源实现、`local/` 本地复现分开放，标注与笔记统一写 `notes.md`、元信息写 `meta.md`。
 
 ## 批注工具
 

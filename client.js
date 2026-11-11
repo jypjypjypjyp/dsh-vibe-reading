@@ -203,6 +203,29 @@ window.__ModuleLoader__.load({
         askFailed: "没能写入输入框，请先在会话里点一下",
         notPdf: "请选择 PDF 文件",
         deletePaper: "删除这篇论文",
+        assignPaper: "修改归属",
+        assignTitle: "这篇论文放在哪里",
+        assignGlobal: "全局库",
+        assignGlobalHint: "不属于任何工作区",
+        assignWorkspaceHint: "跟随工作区，文件存在它的 .vibe_reading 下",
+        assignMoved: "已移到「{name}」",
+        assignEmpty: "还没有其它工作区",
+        filterAll: "全部论文",
+        filterGlobal: "全局库",
+        filterWorkspace: "工作区",
+        pickCount: "已选 {n} 篇",
+        pickMove: "移动到…",
+        pickDelete: "批量删除",
+        pickClear: "取消选择",
+        bulkDeleted: "已删除 {n} 篇",
+        bulkAskTitle: "删除 {n} 篇论文？",
+        bulkAskBody: "pdf、标注和论文文件夹会一起删掉，不能恢复。",
+        bulkDeleteBtn: "删除",
+        bulkMoved: "已移动 {n} 篇",
+        selectPaper: "选择这篇论文",
+        scopeEmpty: "这个范围里还没有论文",
+        searchPlaceholder: "搜索标题、关键词或工作区",
+        searchEmpty: "没有匹配的论文",
         downloadPdf: "下载 PDF 原件",
         untitled: "未命名论文",
         pages: function (n) { return n + " 页"; },
@@ -274,6 +297,17 @@ window.__ModuleLoader__.load({
         noSession: "未关联会话",
         saved: "已保存",
         copyLink: "复制定位链接",
+        storageLabel: "论文存储",
+        migrateConfirm: "切换存储模式会把已有论文移动到新位置，期间插件不可用。继续？",
+        migrateRunning: "正在迁移论文：{done}/{total}",
+        migrateDone: "已迁移 {done} 篇论文",
+        migrateFailed: "迁移有 {failed} 篇失败，模式未切换",
+        migratePreparing: "正在准备迁移…",
+        storageGlobal: "全局",
+        storageWorkspace: "跟随工作区",
+        storageGlobalHint: "所有工作区的论文都放在默认目录 ~/.dsh/vibe-reading，切会话也看同一套论文。",
+        storageWorkspaceHint: "论文放在当前工作区的 .vibe_reading/ 下，不同工作区各有一套；导入时自动记录来源工作区。",
+        workspaceTag: "工作区",
         workRootLabel: "工作目录",
         workRootHint: "每篇论文在下面各占一个文件夹：pdf/ 放原文，markdown/ 放解析结果，code/ 放代码。默认 ~/.paper_reading。",
         parseDefaultHint: "上传后默认用 markitdown 静默转 Markdown；在阅读器里点「解析正文（MinerU）」会打断当前解析并改用 MinerU。",
@@ -348,6 +382,29 @@ window.__ModuleLoader__.load({
         askFailed: "Could not write to the composer. Click inside the conversation first.",
         notPdf: "Please choose a PDF file",
         deletePaper: "Delete this paper",
+        assignPaper: "Change owner",
+        assignTitle: "Where does this paper live?",
+        assignGlobal: "Global library",
+        assignGlobalHint: "Not tied to any workspace",
+        assignWorkspaceHint: "Follows the workspace, stored in its .vibe_reading",
+        assignMoved: "Moved to {name}",
+        assignEmpty: "No other workspace yet",
+        filterAll: "All papers",
+        filterGlobal: "Global library",
+        filterWorkspace: "Workspace",
+        pickCount: "{n} selected",
+        pickMove: "Move to…",
+        pickDelete: "Delete selected",
+        pickClear: "Clear selection",
+        bulkDeleted: "Deleted {n}",
+        bulkAskTitle: "Delete {n} papers?",
+        bulkAskBody: "Their pdf, annotations and folders are removed for good.",
+        bulkDeleteBtn: "Delete",
+        bulkMoved: "Moved {n}",
+        selectPaper: "Select this paper",
+        scopeEmpty: "No papers in this range yet",
+        searchPlaceholder: "Search title, keyword or workspace",
+        searchEmpty: "No matching paper",
         downloadPdf: "Download original PDF",
         untitled: "Untitled paper",
         pages: function (n) { return n + (n === 1 ? " page" : " pages"); },
@@ -419,6 +476,17 @@ window.__ModuleLoader__.load({
         noSession: "No linked conversation",
         saved: "Saved",
         copyLink: "Copy location link",
+        storageLabel: "Paper storage",
+        migrateConfirm: "Switching storage moves every paper to the new place; the plugin is unavailable until it finishes. Continue?",
+        migrateRunning: "Moving papers: {done}/{total}",
+        migrateDone: "Moved {done} papers",
+        migrateFailed: "{failed} papers failed to move, the mode stays unchanged",
+        migratePreparing: "Preparing the move…",
+        storageGlobal: "Shared",
+        storageWorkspace: "Per workspace",
+        storageGlobalHint: "Every workspace shares one library in ~/.dsh/vibe-reading.",
+        storageWorkspaceHint: "Papers live in the current workspace's .vibe_reading/, so each workspace keeps its own set. Imports record their workspace.",
+        workspaceTag: "Workspace",
         workRootLabel: "Working folder",
         workRootHint: "Each paper gets one folder under this root: pdf/ keeps the original, markdown/ the extraction, code/ the code. Defaults to ~/.paper_reading.",
         parseDefaultHint: "Uploads convert silently with markitdown; choosing Parse text (MinerU) interrupts the current parse and switches engine.",
@@ -572,12 +640,46 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /** The working folder of the session this tab belongs to; '' when unknown. */
+    function sessionCwd(ctx, sessionId) {
+      try {
+        var sessions = ctx.get("sessions");
+        var snapshot = sessions && sessions.list && sessions.list.getSnapshot
+          ? sessions.list.getSnapshot()
+          : null;
+        var row = snapshot && snapshot.byId ? snapshot.byId[sessionId] : null;
+        return row && typeof row.cwd === "string" ? row.cwd : "";
+      } catch (error) {
+        return "";
+      }
+    }
+
+    /** The session the shell is showing right now, without a tab scope. */
+    function currentSessionCwd(ctx) {
+      try {
+        var ui = ctx.get("uiWorkspace");
+        var id = ui && ui.mainReference ? ui.mainReference.sessionId : "";
+        return typeof id === "string" && id !== "" ? sessionCwd(ctx, id) : "";
+      } catch (error) {
+        return "";
+      }
+    }
+
     function getSettings() {
       return getJson(API_BASE + "settings").then(function (body) { return body.settings; });
     }
 
     function patchSettings(patch) {
       return sendJsonRequest(API_BASE + "settings", "PATCH", patch).then(function (body) { return body.settings; });
+    }
+
+    function readMigration() {
+      return getJson(API_BASE + "storage/migrate").then(function (body) { return body.migration; });
+    }
+
+    function startMigration(storage, cwd) {
+      return sendJsonRequest(API_BASE + "storage/migrate", "POST", { storage: storage, cwd: cwd })
+        .then(function (body) { return body.migration; });
     }
 
     function startParse(id, engine) {
@@ -612,8 +714,10 @@ window.__ModuleLoader__.load({
       });
     }
 
-    function uploadFile(file) {
-      return fetch(API_BASE + "upload?name=" + encodeURIComponent(file.name || "paper.pdf"), {
+    function uploadFile(file, cwd) {
+      var query = "upload?name=" + encodeURIComponent(file.name || "paper.pdf");
+      if (typeof cwd === "string" && cwd !== "") query += "&cwd=" + encodeURIComponent(cwd);
+      return fetch(API_BASE + query, {
         method: "POST",
         headers: { "content-type": "application/pdf" },
         body: file
@@ -1138,6 +1242,30 @@ window.__ModuleLoader__.load({
       var confirmId = confirmPair[0];
       var setConfirmId = confirmPair[1];
 
+      var scopePair = useState("all");
+      var scope = scopePair[0];
+      var setScope = scopePair[1];
+
+      var spacesPair = useState(null);
+      var workspaces = spacesPair[0];
+      var setWorkspaces = spacesPair[1];
+
+      var pickedPair = useState([]);
+      var picked = pickedPair[0];
+      var setPicked = pickedPair[1];
+
+      var assignPair = useState(null);
+      var assign = assignPair[0];
+      var setAssign = assignPair[1];
+
+      var queryPair = useState("");
+      var query = queryPair[0];
+      var setQuery = queryPair[1];
+
+      var bulkAskPair = useState(false);
+      var bulkAsk = bulkAskPair[0];
+      var setBulkAsk = bulkAskPair[1];
+
       var flashPair = useState(null);
       var hlCardPair = useState(null);
       var hlCard = hlCardPair[0];
@@ -1267,6 +1395,11 @@ window.__ModuleLoader__.load({
 
       // Composer focus reported by the host is a hint only; the insertion path
       // works whether or not the composer has been touched this session.
+
+      useEffect(function () {
+        if (!libraryOpen) return;
+        void refreshWorkspaces();
+      }, [libraryOpen]);
 
       function refreshLibrary() {
         return getJson(API_BASE + "library").then(function (body) {
@@ -2109,7 +2242,10 @@ window.__ModuleLoader__.load({
         }
         setLinkBusy(true);
         setError(null);
-        sendJsonRequest(API_BASE + "import", "POST", { url: target })
+        sendJsonRequest(API_BASE + "import", "POST", {
+          url: target,
+          cwd: sessionCwd(ctx, scope.sessionId)
+        })
           .then(function (body) { return body.doc; })
           .then(function (doc) {
             setLinkDraft(null);
@@ -2133,7 +2269,7 @@ window.__ModuleLoader__.load({
         setBusy("upload");
         setError(null);
         var openReader = libraryOpen === false;
-        uploadFile(file)
+        uploadFile(file, sessionCwd(ctx, scope.sessionId))
           .then(function (doc) { return afterImport(doc, openReader); })
           .catch(function (errorValue) {
             setError(errorValue && errorValue.message ? errorValue.message : String(errorValue));
@@ -2447,18 +2583,199 @@ window.__ModuleLoader__.load({
         });
       }
 
+      function refreshWorkspaces() {
+        return fetch(API_BASE + "workspaces", { headers: { accept: "application/json" } })
+          .then(function (response) { return response.json(); })
+          .then(function (data) { setWorkspaces(Array.isArray(data.workspaces) ? data.workspaces : []); })
+          .catch(function () { setWorkspaces([]); });
+      }
+
+      function ownerOf(doc) {
+        return doc.storage === "workspace" && doc.workspacePath ? doc.workspacePath : "";
+      }
+
+      function matchesQuery(doc) {
+        var needle = query.trim().toLowerCase();
+        if (needle === "") return true;
+        var haystack = [doc.title, doc.workspaceName, (doc.keywords || []).join(" ")]
+          .filter(function (value) { return typeof value === "string"; })
+          .join(" ")
+          .toLowerCase();
+        return haystack.indexOf(needle) >= 0;
+      }
+
+      function matchesScope(doc) {
+        if (scope === "all") return true;
+        if (scope === "global") return ownerOf(doc) === "";
+        return ownerOf(doc) === scope;
+      }
+
+      function togglePick(id) {
+        setPicked(function (current) {
+          return current.indexOf(id) >= 0
+            ? current.filter(function (value) { return value !== id; })
+            : current.concat([id]);
+        });
+      }
+
+      function assignPaper(ids, workspace) {
+        var list = ids.slice();
+        if (list.length === 0) return Promise.resolve();
+        var patch = {
+          workspace: workspace === null ? { path: "", name: "" } : { path: workspace.path, name: workspace.name }
+        };
+        setBusy("assign");
+        var chain = Promise.resolve();
+        list.forEach(function (id) {
+          chain = chain.then(function () { return patchDoc(id, patch); });
+        });
+        return chain
+          .then(function () {
+            showToast(formatString(t(list.length === 1 ? "assignMoved" : "bulkMoved"), {
+              name: workspace === null ? t("assignGlobal") : workspace.name,
+              n: list.length
+            }));
+            setPicked([]);
+            setAssign(null);
+            return refreshLibrary().then(refreshWorkspaces);
+          })
+          .catch(function (errorValue) {
+            showToast(errorValue && errorValue.message ? errorValue.message : String(errorValue));
+          })
+          .then(function () { setBusy(""); });
+      }
+
+      function bulkDelete() {
+        setBulkAsk(false);
+        var ids = picked.slice();
+        var removedCurrent = ids.indexOf(docIdRef.current) >= 0;
+        setBusy("bulkDelete");
+        var chain = Promise.resolve();
+        ids.forEach(function (id) {
+          chain = chain.then(function () { return deleteDoc(id); });
+        });
+        return chain
+          .then(function () {
+            showToast(formatString(t("bulkDeleted"), { n: ids.length }));
+            if (removedCurrent) {
+              destroyPdf();
+              setMeta(null);
+              setPdf(null);
+              setPageSizes(null);
+              setAnnotations([]);
+              setDocId(null);
+            }
+            setPicked([]);
+            return refreshLibrary().then(refreshWorkspaces);
+          })
+          .catch(function (errorValue) {
+            showToast(errorValue && errorValue.message ? errorValue.message : String(errorValue));
+          })
+          .then(function () { setBusy(""); });
+      }
+
+      function renderBulkConfirm() {
+        var ids = picked.slice();
+        return ReactDOM.createPortal(
+          h(
+            "div",
+            { className: "pr-assign-shade", onClick: function () { setBulkAsk(false); } },
+            h(
+              "div",
+              { className: "pr-assign pr-confirm", onClick: function (event) { event.stopPropagation(); } },
+              h("div", { className: "pr-assign-title" }, formatString(t("bulkAskTitle"), { n: ids.length })),
+              h("div", { className: "pr-assign-sub" }, t("bulkAskBody")),
+              h(
+                "div",
+                { className: "pr-confirm-row" },
+                h("button", { type: "button", className: "pr-btn pr-btn-small", onClick: function () { setBulkAsk(false); } }, t("close")),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "pr-btn pr-btn-small pr-confirm-del",
+                    style: { background: "var(--dsw-alias-state-error-primary)", color: "#fff", borderColor: "transparent" },
+                    onClick: function () { void bulkDelete(); }
+                  },
+                  t("bulkDeleteBtn")
+                )
+              )
+            )
+          ),
+          document.body
+        );
+      }
+
+      function renderAssign() {
+        var ids = (assign && assign.ids) || [];
+        var options = [{
+          path: "",
+          name: t("assignGlobal"),
+          hint: t("assignGlobalHint"),
+          count: (library || []).filter(function (doc) { return ownerOf(doc) === ""; }).length
+        }].concat((workspaces || []).map(function (ws) {
+          return { path: ws.path, name: ws.name, hint: t("assignWorkspaceHint"), count: ws.count };
+        }));
+        // Portalled: the reader panel can be docked small, a dialog must still fit the viewport.
+        return ReactDOM.createPortal(
+          h(
+            "div",
+            { className: "pr-assign-shade", onClick: function () { setAssign(null); } },
+            h(
+              "div",
+              { className: "pr-assign", onClick: function (event) { event.stopPropagation(); } },
+              h("div", { className: "pr-assign-title" }, t("assignTitle")),
+              ids.length > 1
+                ? h("div", { className: "pr-assign-sub" }, formatString(t("pickCount"), { n: ids.length }))
+                : null,
+              options.map(function (option) {
+                return h(
+                  "button",
+                  {
+                    key: option.path === "" ? "__global" : option.path,
+                    type: "button",
+                    className: "pr-assign-row",
+                    onClick: function () {
+                      void assignPaper(ids, option.path === "" ? null : option);
+                    }
+                  },
+                  h(Icon, { name: "folder", size: 14 }),
+                  h(
+                    "span",
+                    { className: "pr-assign-text" },
+                    h("span", { className: "pr-assign-name" }, option.name),
+                    h("span", { className: "pr-assign-hint" }, option.hint)
+                  ),
+                  h("span", { className: "pr-assign-count" }, option.count ? String(option.count) : "")
+                );
+              }),
+              h(
+                "button",
+                { type: "button", className: "pr-link-btn pr-assign-close", onClick: function () { setAssign(null); } },
+                t("close")
+              )
+            )
+          ),
+          document.body
+        );
+      }
+
       function renderLibrary() {
         if (!libraryOpen) return null;
+        var all = library || [];
+        var shown = library === null ? [] : all.filter(function (doc) {
+          return matchesScope(doc) && matchesQuery(doc);
+        });
         var body = null;
         if (library === null) {
           body = h("div", { className: "pr-panel-empty" }, "…");
-        } else if (library.length === 0) {
-          body = h("div", { className: "pr-panel-empty" }, t("emptyLibrary"));
+        } else if (shown.length === 0) {
+          body = h("div", { className: "pr-panel-empty" }, t(query.trim() === "" ? (scope === "all" ? "emptyLibrary" : "scopeEmpty") : "searchEmpty"));
         } else {
           body = h(
             "div",
             { className: "pr-list" },
-            library.map(function (doc) {
+            shown.map(function (doc) {
               return renderDocCard(doc);
             })
           );
@@ -2470,6 +2787,27 @@ window.__ModuleLoader__.load({
             "div",
             { className: "pr-panel-head" },
             h("span", { className: "pr-panel-title" }, t("library")),
+            h(
+              "select",
+              {
+                className: "pr-scope",
+                value: scope,
+                title: t("filterAll"),
+                onChange: function (event) {
+                  setScope(event.target.value);
+                  setPicked([]);
+                }
+              },
+              h("option", { value: "all" }, t("filterAll")),
+              h("option", { value: "global" }, t("filterGlobal")),
+              (workspaces || []).map(function (ws) {
+                return h(
+                  "option",
+                  { key: ws.path, value: ws.path },
+                  t("filterWorkspace") + " · " + ws.name + "（" + ws.count + "）"
+                );
+              })
+            ),
             h(
               "button",
               { type: "button", className: "pr-btn pr-btn-primary pr-btn-small", onClick: chooseFile },
@@ -2484,25 +2822,121 @@ window.__ModuleLoader__.load({
             ),
             iconButton("close", t("close"), function () { setLibraryOpen(false); })
           ),
-          body
+          h(
+            "div",
+            { className: "pr-search-row" },
+            h(Icon, { name: "search", size: 12 }),
+            h("input", {
+              className: "pr-search-input",
+              value: query,
+              placeholder: t("searchPlaceholder"),
+              spellCheck: false,
+              onChange: function (event) { setQuery(event.target.value); },
+              onKeyDown: function (event) {
+                if (event.key === "Escape") setQuery("");
+              }
+            }),
+            query === "" ? null : h(
+              "button",
+              { type: "button", className: "pr-icon-btn-sm", title: t("close"), onClick: function () { setQuery(""); } },
+              h(Icon, { name: "close", size: 11 })
+            )
+          ),
+          picked.length > 0
+            ? h(
+                "div",
+                { className: "pr-bulk" },
+                h("span", { className: "pr-bulk-count" }, formatString(t("pickCount"), { n: picked.length })),
+                h(
+                  "button",
+                  { type: "button", className: "pr-btn pr-btn-small", onClick: function () { setAssign({ ids: picked.slice() }); } },
+                  h(Icon, { name: "folder", size: 12 }),
+                  t("pickMove")
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "pr-btn pr-btn-small pr-btn-danger",
+                    onClick: function () { setBulkAsk(true); }
+                  },
+                  t("pickDelete")
+                ),
+                h(
+                  "button",
+                  { type: "button", className: "pr-btn pr-btn-small", onClick: function () { setPicked([]); } },
+                  t("pickClear")
+                )
+              )
+            : null,
+          body,
+          bulkAsk && picked.length > 0 ? renderBulkConfirm() : null,
+          assign === null ? null : renderAssign()
         );
       }
 
       function renderDocCard(doc) {
         var active = doc.id === docId;
         var confirming = confirmId === doc.id;
+        var isPicked = picked.indexOf(doc.id) >= 0;
         var metaText = (doc.pageCount === null ? "" : t("pages")(doc.pageCount) + " · ")
           + formatBytes(doc.size) + " · " + formatDate(doc.updatedAt, lang);
         return h(
           "div",
           {
             key: doc.id,
-            className: "pr-doc-card" + (active ? " pr-doc-card-active" : ""),
+            className: "pr-doc-card" + (active ? " pr-doc-card-active" : "") + (isPicked ? " pr-doc-card-picked" : ""),
             title: doc.title,
             onClick: function () { void openDoc(doc.id); }
           },
+          h(
+            "button",
+            {
+              type: "button",
+              className: "pr-doc-pick" + (isPicked ? " is-on" : ""),
+              title: t("selectPaper"),
+              onClick: function (event) {
+                event.stopPropagation();
+                togglePick(doc.id);
+              }
+            },
+            isPicked ? h(Icon, { name: "check", size: 11 }) : null
+          ),
+          h(
+            "div",
+            { className: "pr-doc-actions" },
+            h(
+              "button",
+              {
+                type: "button",
+                className: "pr-doc-owner",
+                title: t("assignPaper"),
+                onClick: function (event) {
+                  event.stopPropagation();
+                  setAssign({ ids: [doc.id] });
+                }
+              },
+              h(Icon, { name: "folder", size: 12 })
+            ),
+            h(
+              "button",
+              {
+                type: "button",
+                className: "pr-doc-del" + (confirming ? " pr-doc-del-confirm" : ""),
+                title: confirming ? t("confirmDelete") : t("deletePaper"),
+                onClick: function (event) {
+                  event.stopPropagation();
+                  removePaper(doc.id);
+                }
+              },
+              confirming ? t("confirmDelete") : h(Icon, { name: "trash", size: 13 })
+            )
+          ),
           h("div", { className: "pr-doc-thumb" }, h(DocThumb, { docId: doc.id })),
           h("div", { className: "pr-doc-name" }, doc.title),
+          doc.storage === "workspace"
+            ? h("div", { className: "pr-doc-scope", title: doc.workspacePath }, t("workspaceTag") + " · " + (doc.workspaceName || ""))
+            : null,
           h("div", { className: "pr-doc-meta" }, metaText),
           Array.isArray(doc.keywords) && doc.keywords.length > 0
             ? h(
@@ -2512,20 +2946,7 @@ window.__ModuleLoader__.load({
                   return h("span", { key: word, className: "pr-doc-tag", title: word }, word);
                 })
               )
-            : null,
-          h(
-            "button",
-            {
-              type: "button",
-              className: "pr-doc-del" + (confirming ? " pr-doc-del-confirm" : ""),
-              title: confirming ? t("confirmDelete") : t("deletePaper"),
-              onClick: function (event) {
-                event.stopPropagation();
-                removePaper(doc.id);
-              }
-            },
-            confirming ? t("confirmDelete") : h(Icon, { name: "trash", size: 13 })
-          )
+            : null
         );
       }
 
@@ -3702,6 +4123,11 @@ window.__ModuleLoader__.load({
       var failedPair = useState(false);
       var failed = failedPair[0];
       var setFailed = failedPair[1];
+      var migratePair = useState(null);
+      var migrating = migratePair[0];
+      var setMigrating = migratePair[1];
+      var migrateTimer = useRef(null);
+      var busy = saving || (migrating !== null && migrating.running === true);
 
       var t = function (key) { return textOf(lang, key); };
 
@@ -3715,6 +4141,7 @@ window.__ModuleLoader__.load({
           if (value === null || value === undefined) return;
           setSettings(value);
           setDraft({
+            storage: value.storage === "workspace" ? "workspace" : "global",
             workRoot: value.workRoot,
             mineruModel: value.mineruModel,
             mineruLang: value.mineruLang,
@@ -3727,10 +4154,11 @@ window.__ModuleLoader__.load({
         ? { mineruApiKeySet: false, mineruApiKeyHint: "" }
         : settings;
       var editing = draft === null
-        ? { workRoot: "", mineruModel: "vlm", mineruLang: "ch", mineruApiKey: "" }
+        ? { storage: "global", workRoot: "", mineruModel: "vlm", mineruLang: "ch", mineruApiKey: "" }
         : draft;
       var dirty = settings !== null && draft !== null && (
-        editing.workRoot !== settings.workRoot
+        editing.storage !== (settings.storage === "workspace" ? "workspace" : "global")
+        || editing.workRoot !== settings.workRoot
         || editing.mineruModel !== settings.mineruModel
         || editing.mineruLang !== settings.mineruLang
         || editing.mineruApiKey.trim() !== ""
@@ -3745,8 +4173,50 @@ window.__ModuleLoader__.load({
         });
       }
 
+      function adoptSettings(value) {
+        setSettings(value);
+        setDraft({
+          storage: value.storage === "workspace" ? "workspace" : "global",
+          workRoot: value.workRoot,
+          mineruModel: value.mineruModel,
+          mineruLang: value.mineruLang,
+          mineruApiKey: ""
+        });
+      }
+
+      function stopPolling() {
+        if (migrateTimer.current !== null) {
+          clearInterval(migrateTimer.current);
+          migrateTimer.current = null;
+        }
+      }
+
+      /** Move the papers, watching the host's progress counter. */
+      function migrate(mode) {
+        setMigrating({ running: true, total: 0, done: 0, failed: 0, error: "" });
+        stopPolling();
+        migrateTimer.current = setInterval(function () {
+          readMigration().then(function (state) {
+            if (state === null || state === undefined) return;
+            setMigrating(state);
+            if (state.running !== true) stopPolling();
+          }).catch(function () { /* keep the last known state */ });
+        }, 500);
+        return startMigration(mode, currentSessionCwd(ctx)).then(function (state) {
+          stopPolling();
+          setMigrating(state);
+          return getSettings().then(function (value) {
+            if (value !== null && value !== undefined) adoptSettings(value);
+            return state;
+          });
+        });
+      }
+
       function save() {
-        if (draft === null || saving) return;
+        if (draft === null || busy) return;
+        var next = editing.storage === "workspace" ? "workspace" : "global";
+        var wantMove = settings !== null && next !== (settings.storage === "workspace" ? "workspace" : "global");
+        if (wantMove && typeof window.confirm === "function" && !window.confirm(t("migrateConfirm"))) return;
         setSaving(true);
         setFailed(false);
         var patch = {
@@ -3755,23 +4225,65 @@ window.__ModuleLoader__.load({
           mineruLang: editing.mineruLang.trim()
         };
         if (editing.mineruApiKey.trim() !== "") patch.mineruApiKey = editing.mineruApiKey.trim();
-        patchSettings(patch).then(function (value) {
-          setSettings(value);
-          setDraft({
-            workRoot: value.workRoot,
-            mineruModel: value.mineruModel,
-            mineruLang: value.mineruLang,
-            mineruApiKey: ""
+        patchSettings(patch)
+          .then(function (value) {
+            adoptSettings(value);
+            return wantMove ? migrate(next) : value;
+          })
+          .then(function () { setSaving(false); })
+          .catch(function () {
+            setSaving(false);
+            setFailed(true);
           });
-          setSaving(false);
-        }).catch(function () {
-          setSaving(false);
-          setFailed(true);
-        });
       }
+
+      useEffect(function () { return function () { stopPolling(); }; }, []);
+
+      var storageRow = h(
+        "div",
+        { className: "pr-store" },
+        h("div", { className: "pr-store-label" }, t("storageLabel")),
+        h("div", { className: "pr-store-row" },
+          h("button", {
+            type: "button",
+            className: "pr-seg" + (editing.storage === "workspace" ? "" : " is-on"),
+            disabled: busy,
+            onClick: function () { edit("storage", "global"); }
+          }, t("storageGlobal")),
+          h("button", {
+            type: "button",
+            className: "pr-seg" + (editing.storage === "workspace" ? " is-on" : ""),
+            disabled: busy,
+            onClick: function () { edit("storage", "workspace"); }
+          }, t("storageWorkspace"))
+        ),
+        h("div", { className: "pr-set-hint" },
+          editing.storage === "workspace" ? t("storageWorkspaceHint") : t("storageGlobalHint")),
+        migrating === null
+          ? null
+          : h(
+              "div",
+              { className: "pr-migrate" },
+              h("div", { className: "pr-migrate-text" },
+                h("span", null, migrating.running === true
+                  ? t("migrateRunning").replace("{done}", migrating.done).replace("{total}", migrating.total)
+                  : migrating.failed > 0
+                    ? t("migrateFailed").replace("{failed}", migrating.failed)
+                    : t("migrateDone").replace("{done}", migrating.done))
+              ),
+              h("div", { className: "pr-bar" },
+                h("div", {
+                  className: "pr-bar-fill",
+                  style: { width: (migrating.total > 0 ? Math.round((migrating.done / migrating.total) * 100) : migrating.running === true ? 6 : 100) + "%" }
+                })
+              ),
+              migrating.error ? h("div", { className: "pr-set-hint" }, migrating.error) : null
+            )
+      );
 
       var children = [];
       if (primitives !== null && typeof primitives.SettingsForm === "function") {
+        children.push(storageRow);
         children.push(h(primitives.SettingsValueField, {
           id: "vibe-reading-work-root",
           label: t("workRootLabel"),
@@ -3782,7 +4294,7 @@ window.__ModuleLoader__.load({
           resetLabel: "",
           invalid: false,
           invalidLabel: "",
-          disabled: saving,
+          disabled: busy,
           placeholder: "~/.paper_reading",
           onEdit: function (value) { edit("workRoot", value); },
           onReset: function () {}
@@ -3794,7 +4306,7 @@ window.__ModuleLoader__.load({
           text: editing.mineruApiKey,
           configured: current.mineruApiKeySet === true,
           stateLabel: current.mineruApiKeySet === true ? t("mineruKeySet").replace("{hint}", current.mineruApiKeyHint) : "",
-          disabled: saving,
+          disabled: busy,
           onEdit: function (value) { edit("mineruApiKey", value); }
         }));
         children.push(h(primitives.SettingsValueField, {
@@ -3807,7 +4319,7 @@ window.__ModuleLoader__.load({
           resetLabel: "",
           invalid: false,
           invalidLabel: "",
-          disabled: saving,
+          disabled: busy,
           onEdit: function (value) { edit("mineruModel", value); },
           onReset: function () {}
         }));
@@ -3821,7 +4333,7 @@ window.__ModuleLoader__.load({
           resetLabel: "",
           invalid: false,
           invalidLabel: "",
-          disabled: saving,
+          disabled: busy,
           onEdit: function (value) { edit("mineruLang", value); },
           onReset: function () {}
         }));
@@ -3838,7 +4350,7 @@ window.__ModuleLoader__.load({
             writable: true,
             dirty: dirty,
             invalid: false,
-            saving: saving,
+            saving: busy,
             failed: failed
           },
           onSave: save,
@@ -3851,6 +4363,7 @@ window.__ModuleLoader__.load({
       return h(
         "div",
         { className: "pr-set" },
+        storageRow,
         h("div", { className: "pr-set-hint" }, t("workRootHint")),
         h("input", {
           className: "pr-input",
@@ -3952,6 +4465,10 @@ window.__ModuleLoader__.load({
       ".pr-parsebar{position:absolute;left:10px;right:10px;bottom:44px;z-index:7;display:flex;flex-direction:column;gap:3px;pointer-events:none}",
       ".pr-parsebar-line{height:3px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}",
       ".pr-parsebar-fill{height:100%;border-radius:999px;background:var(--pr-accent);transition:width .4s ease}",
+      ".pr-migrate{display:flex;flex-direction:column;gap:5px;margin-top:2px}",
+      ".pr-migrate-text{font-size:11.5px;color:var(--dsw-alias-label-secondary)}",
+      ".pr-migrate .pr-bar{height:6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.12));overflow:hidden}",
+      ".pr-migrate .pr-bar-fill{height:100%;border-radius:999px;background:var(--pr-accent,#5b6bf0);transition:width .3s ease}",
       ".pr-parsebar-text{font-size:10.5px;color:var(--dsw-alias-label-secondary);text-align:center}",
       ".pr-icon-btn-off,.pr-icon-btn:disabled{opacity:.38;cursor:not-allowed}",
       ".pr-pagepill{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);display:flex;align-items:center;gap:1px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:999px;padding:2px;box-shadow:0 6px 20px rgba(0,0,0,.28);z-index:6}",
@@ -3972,10 +4489,39 @@ window.__ModuleLoader__.load({
       ".pr-doc-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px}",
       ".pr-doc-tag{font-size:9.5px;line-height:1.4;padding:1px 5px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".pr-doc-meta{font-size:10px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-      ".pr-doc-del{position:absolute;top:4px;right:4px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-secondary);font:inherit;font-size:10px;cursor:pointer;opacity:0;transition:opacity .12s}",
-      ".pr-doc-card:hover .pr-doc-del,.pr-doc-del-confirm{opacity:1}",
+      ".pr-doc-del{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-secondary);font:inherit;font-size:10px;cursor:pointer;opacity:0;transition:opacity .12s}",
+      ".pr-doc-actions{position:absolute;top:4px;right:4px;display:flex;gap:3px;align-items:center;z-index:2}",
+      ".pr-doc-owner{width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;opacity:0;transition:opacity .12s}",
+      ".pr-doc-owner:hover{color:var(--pr-accent,#5b6bf0)}",
+      ".pr-doc-card:hover .pr-doc-del,.pr-doc-card:hover .pr-doc-owner,.pr-doc-del-confirm{opacity:1}",
+      ".pr-doc-pick{position:absolute;top:4px;left:4px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:var(--dsw-alias-bg-overlay);color:#fff;font:inherit;cursor:pointer;opacity:0;transition:opacity .12s;z-index:2;padding:0}",
+      ".pr-doc-card:hover .pr-doc-pick{opacity:1}",
+      ".pr-doc-pick.is-on{opacity:1;background:var(--pr-accent,#5b6bf0);border-color:transparent}",
+      ".pr-doc-card-picked{border-color:var(--pr-accent,#5b6bf0);background:var(--dsw-alias-bg-layer-2)}",
       ".pr-doc-del:hover{color:var(--dsw-alias-state-error-primary)}",
       ".pr-doc-del-confirm{width:auto;padding:0 6px;color:#fff;background:var(--dsw-alias-state-error-primary);border-color:transparent}",
+      ".pr-scope{max-width:118px;flex:none;font:inherit;font-size:11px;padding:3px 4px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}",
+      ".pr-search-row{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);flex:none}",
+      ".pr-search-input{flex:1 1 auto;min-width:0;font:inherit;font-size:11.5px;padding:4px 6px;border-radius:6px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}",
+      ".pr-search-input:focus{outline:none;border-color:var(--pr-accent,#5b6bf0)}",
+      ".pr-bulk{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);flex:none;flex-wrap:wrap}",
+      ".pr-bulk-count{font-size:11px;color:var(--dsw-alias-label-secondary);flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".pr-btn-danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}",
+      ".pr-btn-armed{background:var(--dsw-alias-state-error-primary);color:#fff;border-color:transparent}",
+      ".pr-assign-shade{position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;padding:16px}",
+      ".pr-assign{width:100%;max-width:320px;max-height:70vh;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px;box-shadow:0 12px 34px rgba(0,0,0,.34)}",
+      ".pr-assign-title{font-size:12.5px;font-weight:600;padding:2px 2px 4px}",
+      ".pr-assign-sub{font-size:11px;color:var(--dsw-alias-label-secondary);padding:0 2px 4px}",
+      ".pr-assign-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer}",
+      ".pr-assign-row:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1)}",
+      ".pr-assign-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}",
+      ".pr-assign-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".pr-assign-hint{font-size:10px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".pr-assign-count{flex:none;font-size:10px;color:var(--dsw-alias-label-secondary)}",
+      ".pr-assign-close{align-self:flex-end;margin-top:2px}",
+      ".pr-confirm{max-width:300px}",
+      ".pr-confirm-row{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}",
+      ".pr-confirm-del{background:var(--dsw-alias-state-error-primary);color:#fff;border-color:transparent}",
       ".pr-empty{flex:1 1 auto;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:26px 22px;text-align:center}",
       ".pr-empty-icon{width:54px;height:54px;border-radius:15px;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}",
       ".pr-empty-icon-error{color:var(--dsw-alias-state-error-primary)}",
@@ -4112,6 +4658,13 @@ window.__ModuleLoader__.load({
       ".pr-set-section{font-weight:600;font-size:12.5px;margin-top:6px}",
       ".pr-set-hint{font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary)}",
       ".pr-set-foot{display:flex;align-items:center;gap:10px;margin-top:4px}",
+      ".pr-doc-scope{font-size:10.5px;color:var(--pr-accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+      ".pr-store{display:flex;flex-direction:column;gap:6px}",
+      ".pr-store-label{font-weight:600;font-size:12.5px;color:var(--dsw-alias-label-primary)}",
+      ".pr-store-row{display:flex;gap:6px}",
+      ".pr-seg{font:inherit;font-size:12px;padding:5px 12px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}",
+      ".pr-seg.is-on{border-color:var(--pr-accent,#5b6bf0);color:var(--pr-accent,#5b6bf0);background:color-mix(in srgb, var(--pr-accent,#5b6bf0) 12%, transparent)}",
+      ".pr-seg:disabled{opacity:.5;cursor:default}",
       ".pr-set-note{font-size:11.5px;color:var(--dsw-alias-label-secondary)}",
       ".pr-set .pr-field{display:flex;flex-direction:column;gap:4px}",
       ".pr-set .pr-field>span{font-size:11.5px;color:var(--dsw-alias-label-secondary)}",
