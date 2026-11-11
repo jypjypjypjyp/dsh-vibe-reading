@@ -47,6 +47,18 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 
 设置（论文存储、工作目录、MinerU Token、模型、语言）统一放在左侧「插件」→ `dsh-vibe-reading` 详情页，用 DSH 自带的设置表单渲染（`@deepseek-ai/dsh-client-ui-primitives` 的 `SettingsForm` / `SettingsValueField` / `SettingsSecretField`，与「网页搜索」等内置设置页同一套控件）；阅读器里的「设置」直接跳到那一页。
 
+## 数据与网络
+
+默认全程本地：导入、阅读、标注、笔记、改归属都只读写本机（全局库 `~/.dsh/vibe-reading/`，或工作区的 `.vibe_reading/`）。只有三个动作用到网络，且都由你点击触发：
+
+| 动作 | 去向 | 说明 |
+| --- | --- | --- |
+| 链接导入 | 你粘贴的 URL | 只下载这一个 PDF，不发送本地内容 |
+| 解析正文（MinerU） | `https://mineru.net` | 把这一篇 PDF 上传解析，返回 Markdown 与图片；用你的 Token |
+| AI 找开源 / 克隆代码 | 你确认的仓库地址 | `git clone --depth 1` 到论文文件夹的 `remote/` |
+
+另外首次本地解析会执行一次 `uvx --from markitdown[pdf] markitdown`，从 PyPI 取 markitdown 并缓存，之后不再下载。MinerU Token 只写在本机 `~/.dsh/vibe-reading/settings.json`，接口只回显后四位，不写入论文数据、日志或仓库。
+
 ## 结构
 
 | 文件 | 作用 |
