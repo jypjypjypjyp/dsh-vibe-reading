@@ -881,17 +881,39 @@ window.__ModuleLoader__.load({
     var THUMB_CACHE = {};
     var thumbQueue = Promise.resolve();
 
+    function thumbUrl(docId) {
+      return "/vibe-reading/thumb?id=" + encodeURIComponent(docId);
+    }
+
+    /** Hand the rendered preview to the host so the next open skips pdf.js. */
+    function saveThumb(docId, dataUrl) {
+      try {
+        var comma = dataUrl.indexOf(",");
+        if (comma < 0) return;
+        var binary = window.atob(dataUrl.slice(comma + 1));
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        fetch(thumbUrl(docId), {
+          method: "POST",
+          headers: { "content-type": "image/jpeg" },
+          body: bytes
+        }).catch(function () { /* the cache is optional */ });
+      } catch (error) { /* no atob */ }
+    }
+
     function DocThumb(props) {
       var docId = props.docId;
-      var cachedPair = useState(THUMB_CACHE[docId] === undefined ? null : THUMB_CACHE[docId]);
-      var thumb = cachedPair[0];
-      var setThumb = cachedPair[1];
+      var cached = THUMB_CACHE[docId];
+      var thumbPair = useState(cached === undefined ? null : cached);
+      var thumb = thumbPair[0];
+      var setThumb = thumbPair[1];
+      // Only after the stored preview 404s do we pay for a page-one render.
+      var missPair = useState(false);
+      var miss = missPair[0];
+      var setMiss = missPair[1];
 
       useEffect(function () {
-        if (THUMB_CACHE[docId] !== undefined) {
-          setThumb(THUMB_CACHE[docId]);
-          return undefined;
-        }
+        if (cached !== undefined || !miss) return undefined;
         var cancelled = false;
         /* One page-one render at a time: opening the library must not fire a
            burst of full-document parses. */
@@ -912,6 +934,7 @@ window.__ModuleLoader__.load({
                   var data = canvas.toDataURL("image/jpeg", 0.72);
                   THUMB_CACHE[docId] = data;
                   try { document_.destroy(); } catch (error) { /* already gone */ }
+                  saveThumb(docId, data);
                   return data;
                 });
               });
@@ -922,9 +945,17 @@ window.__ModuleLoader__.load({
           if (!cancelled && data !== null) setThumb(data);
         });
         return function () { cancelled = true; };
-      }, [docId]);
+      }, [docId, miss]);
 
       if (thumb !== null) return h("img", { className: "pr-doc-thumb-img", src: thumb, alt: "" });
+      if (!miss) {
+        return h("img", {
+          className: "pr-doc-thumb-img",
+          src: thumbUrl(docId),
+          alt: "",
+          onError: function () { setMiss(true); }
+        });
+      }
       return h("div", { className: "pr-doc-thumb-ph" }, h(Icon, { name: "file", size: 22 }));
     }
 
@@ -1261,9 +1292,11 @@ window.__ModuleLoader__.load({
       var confirmId = confirmPair[0];
       var setConfirmId = confirmPair[1];
 
-      var scopePair = useState("all");
-      var scope = scopePair[0];
-      var setScope = scopePair[1];
+      /* Library filter ("all" / "global" / a workspace path). Kept apart from
+         props.scope, which is the session the tab belongs to. */
+      var listScopePair = useState("all");
+      var listScope = listScopePair[0];
+      var setListScope = listScopePair[1];
 
       var spacesPair = useState(null);
       var workspaces = spacesPair[0];
@@ -1792,7 +1825,11 @@ window.__ModuleLoader__.load({
         if (visible === false || autoOpenRef.current || library === null) return;
         autoOpenRef.current = true;
         var last = null;
-        try { last = localStorage.getItem(LAST_DOC_KEY + ":" + scope.sessionId); } catch (error) { /* private mode */ }
+        try {
+          last = localStorage.getItem(LAST_DOC_KEY + ":" + scope.sessionId);
+          // Before 0.4.7 the key lost the session id, so every tab shared ":undefined".
+          if (last === null || last === "") last = localStorage.getItem(LAST_DOC_KEY + ":undefined");
+        } catch (error) { /* private mode */ }
         if (last !== null && last !== "") {
           void openDoc(last);
         } else if (library.length > 0) {
@@ -2582,8 +2619,6 @@ window.__ModuleLoader__.load({
                   className: "pr-icon-btn" + (notesOpen && panelTab === "code" ? " pr-icon-btn-active" : "")
                 })
               : null,
-            iconButton("upload", t("importLocal"), function () { chooseFile(); }),
-            iconButton("link", t("importLink"), function () { openLinkDialog(); }),
             meta !== null
               ? h(
                   "button",
@@ -2705,9 +2740,9 @@ window.__ModuleLoader__.load({
       }
 
       function matchesScope(doc) {
-        if (scope === "all") return true;
-        if (scope === "global") return ownerOf(doc) === "";
-        return ownerOf(doc) === scope;
+        if (listScope === "all") return true;
+        if (listScope === "global") return ownerOf(doc) === "";
+        return ownerOf(doc) === listScope;
       }
 
       function togglePick(id) {
@@ -2870,7 +2905,7 @@ window.__ModuleLoader__.load({
         if (library === null) {
           body = h("div", { className: "pr-panel-empty" }, "…");
         } else if (shown.length === 0) {
-          body = h("div", { className: "pr-panel-empty" }, t(query.trim() === "" ? (scope === "all" ? "emptyLibrary" : "scopeEmpty") : "searchEmpty"));
+          body = h("div", { className: "pr-panel-empty" }, t(query.trim() === "" ? (listScope === "all" ? "emptyLibrary" : "scopeEmpty") : "searchEmpty"));
         } else {
           body = h(
             "div",
@@ -2891,10 +2926,10 @@ window.__ModuleLoader__.load({
               "select",
               {
                 className: "pr-scope",
-                value: scope,
+                value: listScope,
                 title: t("filterAll"),
                 onChange: function (event) {
-                  setScope(event.target.value);
+                  setListScope(event.target.value);
                   setPicked([]);
                 }
               },
@@ -3758,28 +3793,6 @@ window.__ModuleLoader__.load({
           },
           h(Icon, { name: "gear", size: 14 }),
           t("settings")
-        ));
-        items.push(h(
-          "button",
-          {
-            type: "button",
-            key: "import-local",
-            className: "pr-menu-item",
-            onClick: function () { setMoreOpen(false); chooseFile(); }
-          },
-          h(Icon, { name: "upload", size: 14 }),
-          t("importLocal")
-        ));
-        items.push(h(
-          "button",
-          {
-            type: "button",
-            key: "import-link",
-            className: "pr-menu-item",
-            onClick: openLinkDialog
-          },
-          h(Icon, { name: "link", size: 14 }),
-          t("importLink")
         ));
         return [
           h("div", { key: "shade", className: "pr-menu-shade", onClick: function () { setMoreOpen(false); } }),

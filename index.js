@@ -7,6 +7,7 @@
  *   /vibe-reading/api/import    POST   {"url": "..."} -> download -> stored paper
  *   /vibe-reading/api/doc       GET/PATCH/DELETE  one paper's metadata + annotations
  *   /vibe-reading/file          GET    original PDF bytes (Range capable)
+ *   /vibe-reading/thumb         GET|POST page-one preview, stored beside the pdf
  *   /vibe-reading/static/*      GET    vendored pdf.js runtime, cmaps, standard fonts
  *
  * Papers live outside any single workspace (`~/.dsh/vibe-reading/`) so the
@@ -276,6 +277,11 @@ function pdfPath(id) {
 
 function metaPath(id) {
   return join(storeOf(id), `${id}.json`)
+}
+
+/** Page-one preview; written once by the client and reused on every later open. */
+function thumbPath(id) {
+  return join(storeOf(id), `${id}.thumb.jpg`)
 }
 
 /** A workspace's own store keeps its pdf/json one level in, so the folder stays readable. */
@@ -698,6 +704,7 @@ async function relocatePaper(meta, id) {
     await mkdir(to, { recursive: true })
     await movePath(join(from, `${id}.pdf`), join(to, `${id}.pdf`))
     await movePath(join(from, `${id}.json`), join(to, `${id}.json`))
+    await movePath(join(from, `${id}.thumb.jpg`), join(to, `${id}.thumb.jpg`)).catch(() => {})
     paperDirs.set(id, to)
     meta.store = to
   }
@@ -1510,6 +1517,7 @@ async function migrateStorage(mode, cwd) {
         if (step.to !== step.from) {
           await movePath(join(step.from, `${step.id}.pdf`), join(step.to, `${step.id}.pdf`))
           await movePath(join(step.from, `${step.id}.json`), join(step.to, `${step.id}.json`))
+          await movePath(join(step.from, `${step.id}.thumb.jpg`), join(step.to, `${step.id}.thumb.jpg`)).catch(() => {})
           paperDirs.set(step.id, step.to)
         }
         // A recorded folder may already be gone; it never blocks the paper's move.
@@ -1654,6 +1662,7 @@ async function deletePaper(id) {
   stopParse(id, 'deleted')
   await unlink(join(dir, `${id}.pdf`)).catch(() => {})
   await unlink(join(dir, `${id}.json`)).catch(() => {})
+  await unlink(join(dir, `${id}.thumb.jpg`)).catch(() => {})
   await rm(join(dir, `${id}.md`), { recursive: true, force: true }).catch(() => {})
   paperDirs.delete(id)
   if (meta.workDir !== '') await rm(meta.workDir, { recursive: true, force: true }).catch(() => {})
@@ -2132,6 +2141,48 @@ async function handleApi(req, res, url, fence) {
     return true
   }
 
+  if (pathname === '/vibe-reading/thumb') {
+    const id = docId(url.searchParams.get('id'))
+    if (id === undefined) {
+      sendError(res, 400, 'missing or invalid paper id', 'bad-id')
+      return true
+    }
+    if (req.method === 'POST') {
+      let bytes
+      try {
+        bytes = await readBody(req, 512 * 1024)
+      } catch (error) {
+        sendError(res, Number.isInteger(error?.status) ? error.status : 400, error?.message ?? String(error), 'bad-body')
+        return true
+      }
+      // A thumbnail is a JPEG or it is nothing; anything else is a bad client.
+      if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+        sendError(res, 400, 'thumbnail must be a jpeg', 'bad-image')
+        return true
+      }
+      await writeFile(thumbPath(id), bytes).catch((error) => {
+        sendError(res, 500, error?.message ?? String(error), 'write-failed')
+      })
+      sendJson(res, 200, { ok: true, bytes: bytes.length })
+      return true
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      sendError(res, 405, 'method not allowed', 'method-error')
+      return true
+    }
+    let info
+    try {
+      info = await stat(thumbPath(id))
+    } catch {
+      sendError(res, 404, 'no thumbnail', 'not-found')
+      return true
+    }
+    serveFile(req, res, thumbPath(id), info.size, 'image/jpeg', {
+      'cache-control': 'public, max-age=31536000, immutable',
+    })
+    return true
+  }
+
   if (pathname.startsWith('/vibe-reading/static/')) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       sendError(res, 405, 'method not allowed', 'method-error')
@@ -2583,58 +2634,51 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 
 每篇论文的工作目录固定这几样，先按目录读，不要凭记忆猜内容：
 
-- \`meta.md\`：元信息——页数、领域关键词、开源仓库地址与克隆状态、解析状态、各目录内容计数。**必有**，先读它。
+- \`meta.md\`：元信息——页数、领域关键词、仓库地址与克隆状态、解析状态、各目录内容计数。**必有**，先读它。
 - \`notes.md\`：标注与笔记的唯一文档，按「## 笔记 / ## 标注」分块，每次改动自动重写。
 - \`markdown/paper.md\`：解析正文，可能带 \`images/\`。
 - \`remote/\`：克隆下来的开源实现，可能是空的。
 - \`local/\`：本地复现代码（论文没开源、或自己想改一版时放这里），默认空。
 - \`pdf/\`：原始 PDF。
 
-\`vibe_reading (action="list", docId)\` 返回的 \`paths\` 指向这些位置；论文可能放在全局库，也可能在当前工作区的 \`.vibe_reading/\`（设置里的「跟随工作区」），以 paths 为准。
+路径一律以 \`list\` 返回的 \`paths\` 为准——论文可能在全局库，也可能在当前工作区的 \`.vibe_reading/\`（设置里的「跟随工作区」）。
 
 ## 一、先查已读，再决定读不读
 
-1. \`list\`（不带 docId）：拿到这篇的 docId、页数、标注与笔记数量。
+1. \`list\`（不带 docId）：拿到 docId、页数、标注与笔记数量。
 2. \`list\`（带 docId）：读全部 annotations、notes 与 paths。
-   要找「以前在哪篇写过 X」：\`search\` + \`query\`（可带 docId 限定单篇），命中会给 docId、页码与原文。
+   要找「以前在哪篇写过 X」：\`search\` + \`query\`，命中会给 docId、页码与原文。
 3. 判定已读：notes 里有「已读」那条，且它覆盖了你要回答的章节与页码。
    - 已读且覆盖：直接用标注与笔记回答，附页码，**不重读**。
    - 只覆盖一部分：只补缺的章节，不从第一页重来。
    - 没读过：走下面的完整流程。
 
-## 一·五、论文库本身也能管理
-
-用户让你加论文、改标题、删论文时，不用他动手：
-
-- \`action="import"\`：\`path\` 传本地 PDF 路径，或 \`url\` 传链接（arXiv 的 abs 链接会自动换成 pdf）。落库前会校验 \`%PDF-\` 文件头与 160 MB 上限，不是 PDF 会被拒——不要绕过它去复制文件。
-- \`action="rename"\`：改标题或关键词（\`keywords\` 给数组）。
-- \`action="delete"\`：连论文一起删掉它的工作目录（pdf、markdown、标注、代码）。**只有用户明确说要删时才做**，删完把删掉的是哪篇说清楚。
+用户要加论文、改标题、删论文时你自己动手（\`import\` / \`rename\` / \`delete\`），不要让他去点界面；删除只在用户明确说要删时做，删完说清删的是哪篇。
 
 ## 二、读
 
 读 \`paths.markdown\`；没有 markdown 就提示用户在阅读器里点解析，或按 PDF 页读。
 要看实现：先 \`ls remote/\`，空就看 \`local/\`；两边都空只说明还没人放代码，别当成论文没有实现。
-  论文有开源实现时用 \`action="code"\` 把仓库地址写进 meta（\`repo\`）；克隆到 \`remote/\` 由阅读器面板的「克隆」按钮发起，不要手动往 \`remote/\` 里拷文件。
+克隆到 \`remote/\` 由阅读器面板的「克隆」按钮发起，不要手动往 \`remote/\` 里拷文件。
 按节推进：摘要 → 引言 → 方法 → 实验 → 局限与结论。**每节读完立刻落标注**，不要攒到最后一起写。
 关键图（架构图、主结果、消融）在 \`markdown/images/\` 里，读到图所在小节时单独看一遍再标；公式与表格的数字直接引用原文。
 
 ## 三、标注：细节索引
 
 每条锚在它说的那一页（PDF 页码，不是 markdown 行号）。
-- \`text\`：原文引句，挑能自证的那句，不超过 200 字。
+- \`text\`：原文引句，挑能自证的那句。
 - \`note\`：你的判断，一句话、不超过 40 字，写「这说明了什么」，不写「作者写了什么」。
 - \`kind\`：\`highlight\` 用于能选中的正文；\`note\` 用于页级观察（图表、页边结论）。
 - 覆盖面：每节 1–3 条；方法的关键步骤、实验的关键数字与对照组必须有。
 - 一条结论对应一条标注，不重复标同一处。
 
-一条用 \`action="create"\`；多条一次用 \`items\` 提交 5–10 条，比一条一调省往返。
-写错了用 \`action="update"\`（\`id\` + 要改的字段）；标错位置想丢掉，用 \`action="delete"\`（\`id\` + \`docId\`）删那一条。
+多条用 \`items\` 一次提交 5–10 条，比一条一调省往返。
 
 不标：目录、致谢、纯背景铺垫、同一结论的重复表述。
 
 ## 四、大笔记：按块写，一篇论文一组
 
-读完立刻写，**一块一条**（\`action="note"\`，\`title\` 填块名，正文不要再重复块名），六块齐全：
+读完立刻写，**一块一条**（\`title\` 填块名，正文不要再重复块名），六块齐全：
 
 1. **【论文简介】** 解决什么问题、用什么方法、结论有多强（真机？大规模？单一任务？）。
 2. **【方法骨架】** 3–5 步或模块，写清输入输出与依赖顺序；关键设计选择说清为什么这么做。
@@ -2647,12 +2691,12 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 6. **【已读】** \`已读 p1-pN；覆盖 X 节；未读 附录\`——下次靠它判断要不要重读。
 
 每条 2–5 句。大笔记不是摘要：写判断与取舍，让没读过的人也能据此行动。
-标注与笔记都落进论文目录的 \`notes.md\`——那是这篇论文唯一的可读文档，别在别处再存一份。
-同一篇论文只有这一组，不要写第二遍；有新认识就 \`update_note\` 改对应的那块，某块彻底作废用 \`delete_note\` 删掉，不要留空壳。
+标注与笔记都落进 \`notes.md\`——那是这篇论文唯一的可读文档，别在别处再存一份。
+同一篇论文只有这一组：有新认识就改对应那块，某块彻底作废就删掉，不要留空壳。
 
 ## 五、关键词与标题：让这篇论文可被认出
 
-读完（标注与大笔记都落好）再跑一次 \`action="keywords"\`，一次给两样：
+读完（标注与大笔记都落好）再跑一次 \`keywords\`，一次给两样：
 
 - \`keywords\`：3–6 个词，大领域 + 子方向 + 任务或数据名，例如 \`["VLA", "推理运行时", "Roofline", "机器人策略"]\`。
 - \`title\`：论文的简洁标题——取原文主标题，去掉 arXiv 编号、版本号与「Preprint」之类的尾巴，副标题太长就砍掉；中文论文保留原中文标题，不要自己翻译。

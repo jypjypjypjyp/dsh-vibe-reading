@@ -37,7 +37,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 ## 使用
 
 1. 打开右侧边栏，点 `+`，选「Vibe Reading」。
-2. 导入论文有三条路：工具栏的「本地导入」选文件、把 PDF 拖进面板、或「链接导入」粘贴地址（PDF 直链，或 arXiv 的 `abs` / `pdf` 链接，`abs` 会自动换成 `pdf`）。导入后静默用 markitdown 转一份 Markdown；「更多 → 解析正文（MinerU）」会中断它、改用 MinerU（要 Token），底部进度条实时走。
+2. 导入都在论文库里：点左上角的书名打开库，头上有「本地」选文件与「链接」粘贴地址（PDF 直链，或 arXiv 的 `abs` / `pdf` 链接，`abs` 会自动换成 `pdf`）；也可以直接把 PDF 拖进面板。导入后静默用 markitdown 转一份 Markdown；「更多 → 解析正文（MinerU）」会中断它、改用 MinerU（要 Token），底部进度条实时走。
 3. 选中正文文字，浮出菜单里可以高亮、笔记、直接提问，或「翻译」——把这一段交给模型译出来，不带上文，浮窗里能换个方向再译一次；工具栏的 `</>` 打开「代码」页，`@` 把 `/dsh-vibe-reading` 与论文目录写进输入框，`⋯` 里有「解析正文（MinerU）」与「设置」。
 4. 面板三栏：**标注**（挂在某页某段原文上的高亮与批注，第二行显示它的笔记）、**笔记**（论文级的分块结论，可多条，随时增删改）、**代码**（再分「开源仓库 / 本地复现仓库」两个页签，各有目录浏览）。
 
@@ -68,7 +68,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 | `client.js` | Client：向 `ctx.betterSidebar` 注册 `vibe-reading` tab（阅读器、标注/代码面板），并向 `plugins.detail.section` 注册插件页里的「阅读器设置」 |
 | `public/` | vendored pdf.js 3.11（`pdf.min.js`、worker、cmaps、standard_fonts），Apache-2.0，许可证见 `public/LICENSE-pdfjs.txt` |
 
-存储：「全局」模式下内部库是 `~/.dsh/vibe-reading/`（`<uuid>.pdf` 原件、`<uuid>.json` 元数据、`settings.json` 设置），论文文件夹在设置里的工作目录（默认 `~/.vibe_reading/<论文名>/`）；「跟随工作区」模式下两者都进 `<工作区>/.vibe_reading/`，索引文件在 `store/`、论文文件夹在 `papers/<论文名>/`。论文文件夹按 `pdf/` 原件（与库里的 `<uuid>.pdf` 是同一个文件的硬链接，不额外占盘）、`markdown/` 解析结果（可能带 `images/`）、`remote/` 开源实现、`local/` 本地复现分开放，标注与笔记统一写 `notes.md`、元信息写 `meta.md`。
+存储：「全局」模式下内部库是 `~/.dsh/vibe-reading/`（`<uuid>.pdf` 原件、`<uuid>.json` 元数据、`settings.json` 设置），论文文件夹在设置里的工作目录（默认 `~/.vibe_reading/<论文名>/`）；「跟随工作区」模式下两者都进 `<工作区>/.vibe_reading/`，索引文件在 `store/`、论文文件夹在 `papers/<论文名>/`。论文库缩略图缓存在 `<uuid>.thumb.jpg`（和 pdf、json 放在一起）：第一次进库用 pdf.js 渲第 1 页存下来，之后每次直接读这张图，不再解析 PDF；删论文、迁移、改归属时跟着一起走。论文文件夹按 `pdf/` 原件（与库里的 `<uuid>.pdf` 是同一个文件的硬链接，不额外占盘）、`markdown/` 解析结果（可能带 `images/`）、`remote/` 开源实现、`local/` 本地复现分开放，标注与笔记统一写 `notes.md`、元信息写 `meta.md`。
 
 ## 批注工具
 
