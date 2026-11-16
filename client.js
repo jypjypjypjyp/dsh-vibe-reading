@@ -49,6 +49,14 @@ window.__ModuleLoader__.load({
       ],
       chevronDown: [["path", { d: "m4.5 6.5 3.5 3.5 3.5-3.5" }]],
       chevronLeft: [["path", { d: "M9.5 4.5 6 8l3.5 3.5" }]],
+      refresh: [
+        ["path", { d: "M13.3 8A5.3 5.3 0 1 1 11.6 4.1" }],
+        ["path", { d: "M13.4 2.3v3.5h-3.5" }]
+      ],
+      home: [
+        ["path", { d: "M2.6 7.4 8 3l5.4 4.4v5.3a.9.9 0 0 1-.9.9H3.5a.9.9 0 0 1-.9-.9V7.4Z" }],
+        ["path", { d: "M6.4 13.6V9.9h3.2v3.7" }]
+      ],
       chevronRight: [["path", { d: "M6.5 4.5 10 8l-3.5 3.5" }]],
       translate: [
         ["circle", { cx: 8, cy: 8, r: 5.3 }],
@@ -303,6 +311,9 @@ window.__ModuleLoader__.load({
         aiRepo: "AI 查找仓库",
         codeAskFile: "就这个文件提问",
         codeUp: "上一级",
+        codeRoot: "回到根目录",
+        codeAtFile: "把绝对路径写进输入框",
+        filePathAdded: "已把文件路径写进输入框",
         codeOpenRepo: "在浏览器打开仓库",
         aiAuthor: "AI",
         humanAuthor: "我",
@@ -489,6 +500,9 @@ window.__ModuleLoader__.load({
         aiRepo: "Find repo with AI",
         codeAskFile: "Ask about this file",
         codeUp: "Parent folder",
+        codeRoot: "Back to top folder",
+        codeAtFile: "Insert the absolute path",
+        filePathAdded: "File path added to the input",
         codeOpenRepo: "Open repository",
         aiAuthor: "AI",
         humanAuthor: "Me",
@@ -1623,11 +1637,22 @@ window.__ModuleLoader__.load({
         applyPaperNotes(notes.filter(function (note) { return note.id !== id; }));
       }
 
-      function browseCode(path) {
+      function browseCode(path, retried) {
         readTree(path).then(function (listing) {
           setTree(listing);
         }).catch(function (errorValue) {
-          setTree({ path: path, entries: [], error: errorValue && errorValue.message ? errorValue.message : String(errorValue) });
+          var message = errorValue && errorValue.message ? errorValue.message : String(errorValue);
+          // The folder moves when a paper changes workspace; retry once with the
+          // path the host reports now instead of showing a stale directory.
+          if (retried !== true) {
+            void refreshFolder().then(function (value) {
+              var fresh = value === null ? null : (codeTab === "remote" ? value.remote.path : value.local.path);
+              if (fresh !== null && fresh !== path) browseCode(fresh, true);
+              else setTree({ path: path, entries: [], error: message });
+            });
+            return;
+          }
+          setTree({ path: path, entries: [], error: message });
         });
       }
 
@@ -2772,6 +2797,11 @@ window.__ModuleLoader__.load({
             }));
             setPicked([]);
             setAssign(null);
+            // The folder — and with it remote/ and local/ — moved with the paper.
+            if (list.indexOf(docIdRef.current) >= 0) {
+              setTree(null);
+              void refreshFolder();
+            }
             return refreshLibrary().then(refreshWorkspaces);
           })
           .catch(function (errorValue) {
@@ -3364,7 +3394,36 @@ window.__ModuleLoader__.load({
       function switchCodeTab(tab) {
         setCodeTab(tab);
         setTree(null);
-        if (folder !== null) browseCode(tab === "remote" ? folder.remote.path : folder.local.path);
+        if (folder === null) return;
+        browseCode(tab === "remote" ? folder.remote.path : folder.local.path);
+        void refreshFolder().then(function (value) {
+          if (value === null) return;
+          var fresh = tab === "remote" ? value.remote.path : value.local.path;
+          browseCode(fresh);
+        });
+      }
+
+      /** Absolute path of an entry in the directory the tree is showing. */
+      function treeEntryPath(name) {
+        var shown = tree !== null && tree.path !== undefined
+          ? tree.path
+          : (folder === null ? "" : (codeTab === "remote" ? folder.remote.path : folder.local.path));
+        return String(shown === null || shown === undefined ? "" : shown).replace(/\/+$/, "") + "/" + name;
+      }
+
+      function insertFilePath(path) {
+        var ok = appendToComposer(ctx, scope.sessionId, path);
+        showToast(ok ? t("filePathAdded") : t("askFailed"));
+      }
+
+      function askAboutFile(entry) {
+        var path = treeEntryPath(entry.name);
+        var title = meta === null ? t("untitled") : meta.title;
+        var prompt = lang === "zh"
+          ? "读 " + path + " 中与论文对应的实现，说明它落在论文的哪一步、关键数据结构与取舍。\n\n论文：" + title
+          : "Read " + path + ", the part that implements this paper, and explain which step it belongs to, its key data structures and trade-offs.\n\nPaper: " + title;
+        var ok = appendToComposer(ctx, scope.sessionId, prompt);
+        showToast(ok ? t("askQueued") : t("askFailed"));
       }
 
       function refreshFolder() {
@@ -3434,21 +3493,35 @@ window.__ModuleLoader__.load({
       function renderTreeBlock(base) {
         var listing = tree;
         var shown = listing !== null && listing.path !== undefined ? listing.path : base;
-        var children = [h(
-          "div",
-          { className: "pr-tree-path" },
-          h(
+        var rootPath = base === null || base === undefined ? "" : String(base).replace(/\/+$/, "");
+        var shownPath = shown === null || shown === undefined ? "" : String(shown).replace(/\/+$/, "");
+        var parent = null;
+        if (rootPath !== "" && shownPath.length > rootPath.length && shownPath.indexOf(rootPath) === 0) {
+          parent = shownPath.slice(0, shownPath.lastIndexOf("/"));
+          if (parent.length < rootPath.length) parent = rootPath;
+        }
+        var head = [];
+        if (parent !== null) {
+          head.push(h(
             "button",
-            {
-              type: "button",
-              className: "pr-icon-btn",
-              title: t("codeRefresh"),
-              onClick: function () { browseCode(base); }
-            },
-            h(Icon, { name: "refresh", size: 13 })
-          ),
-          h("span", { title: shown }, shown)
-        )];
+            { type: "button", className: "pr-icon-btn", title: t("codeUp"), onClick: function () { browseCode(parent); } },
+            h(Icon, { name: "chevronLeft", size: 14 })
+          ));
+        }
+        if (rootPath !== "" && shownPath !== rootPath) {
+          head.push(h(
+            "button",
+            { type: "button", className: "pr-icon-btn", title: t("codeRoot"), onClick: function () { browseCode(rootPath); } },
+            h(Icon, { name: "home", size: 14 })
+          ));
+        }
+        head.push(h(
+          "button",
+          { type: "button", className: "pr-icon-btn", title: t("codeRefresh"), onClick: function () { browseCode(shownPath === "" ? base : shownPath); } },
+          h(Icon, { name: "refresh", size: 13 })
+        ));
+        head.push(h("span", { title: shown }, shown));
+        var children = [h("div", { className: "pr-tree-path" }, head)];
         if (listing !== null && listing.error !== undefined) {
           children.push(h("div", { className: "pr-code-hint" }, listing.error));
         } else if (listing !== null && Array.isArray(listing.entries) && listing.entries.length > 0) {
@@ -3458,19 +3531,32 @@ window.__ModuleLoader__.load({
             listing.entries.map(function (entry) {
               var isDir = entry.dir === true;
               return h(
-                "button",
-                {
-                  key: entry.name,
-                  type: "button",
-                  className: "pr-tree-row",
-                  onClick: function () {
-                    if (isDir) browseCode(shown.replace(/\/+$/, "") + "/" + entry.name);
-                    else askAboutFile(entry);
-                  }
-                },
-                h(Icon, { name: isDir ? "folder" : "file", size: 13 }),
-                h("span", { className: "pr-tree-name" }, entry.name),
-                isDir ? null : h("span", { className: "pr-tree-size" }, formatBytes(entry.size))
+                "div",
+                { key: entry.name, className: "pr-tree-item" },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "pr-tree-row",
+                    onClick: function () {
+                      if (isDir) browseCode(shownPath + "/" + entry.name);
+                      else askAboutFile(entry);
+                    }
+                  },
+                  h(Icon, { name: isDir ? "folder" : "file", size: 13 }),
+                  h("span", { className: "pr-tree-name" }, entry.name),
+                  isDir ? null : h("span", { className: "pr-tree-size" }, formatBytes(entry.size))
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "pr-tree-at",
+                    title: t("codeAtFile"),
+                    onClick: function (event) { event.stopPropagation(); insertFilePath(treeEntryPath(entry.name)); }
+                  },
+                  "@"
+                )
               );
             })
           ));
@@ -4822,12 +4908,21 @@ window.__ModuleLoader__.load({
       ".pr-btn[disabled]{opacity:.5;cursor:not-allowed}",
       ".pr-code-actions{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}",
       ".pr-tree-path{display:flex;align-items:center;gap:6px;padding:6px 0;border-top:1px solid var(--dsw-alias-border-l1);font-size:10.5px;color:var(--dsw-alias-label-secondary);min-width:0}",
-      ".pr-tree-path span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".pr-tree-path span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}",
+      ".pr-tree-path .pr-icon-btn{width:24px;height:24px;color:var(--dsw-alias-label-primary);flex:none}",
+      ".pr-tree-path .pr-icon-btn:hover{background:var(--dsw-alias-bg-layer-2)}",
       ".pr-tree{display:flex;flex-direction:column;gap:1px;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;min-height:0}",
       ".pr-tree-row{display:flex;align-items:center;gap:6px;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11.5px;padding:4px 6px;border-radius:6px;cursor:pointer;text-align:left}",
       ".pr-tree-row:hover{background:var(--dsw-alias-bg-layer-2)}",
       ".pr-tree-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".pr-tree-size{font-size:10px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}",
+      ".pr-tree-item{display:flex;align-items:center;gap:2px;border-radius:6px}",
+      ".pr-tree-item:hover{background:var(--dsw-alias-bg-layer-2)}",
+      ".pr-tree-item .pr-tree-row{flex:1 1 auto;min-width:0}",
+      ".pr-tree-item .pr-tree-row:hover{background:transparent}",
+      ".pr-tree-at{flex:none;opacity:0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;padding:3px 5px;border-radius:5px;cursor:pointer;transition:opacity .12s}",
+      ".pr-tree-item:hover .pr-tree-at{opacity:1}",
+      ".pr-tree-at:hover{color:var(--dsw-alias-brand-primary)}",
       ".pr-set-wrap{display:flex;flex-direction:column;gap:10px}",
       ".pr-deps{display:flex;flex-direction:column;gap:6px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:8px;padding:8px 10px;background:var(--dsw-alias-bg-layer-2)}",
       ".pr-deps-text{display:flex;flex-direction:column;gap:2px;font-size:12px;color:var(--dsw-alias-label-primary)}",
