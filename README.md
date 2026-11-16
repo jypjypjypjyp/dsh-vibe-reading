@@ -4,6 +4,8 @@
 
 右侧边栏里的论文工作台：PDF 原样打开，读到的留下，AI 接着用。
 
+▶ [看 35 秒演示](https://www.bilibili.com/video/BV1D9sc6HEms/)（B 站）
+
 ## Why use
 
 - **AI 伴读**：AI 不替你思考，只是阅读伙伴。
