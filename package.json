@@ -1,6 +1,6 @@
 {
   "name": "dsh-vibe-reading",
-  "version": "0.4.8",
+  "version": "0.5.0",
   "description": "Vibe Reading: a DSH sidebar workspace for reading papers — the PDF renders with its original layout and fonts, and highlights, notes, keywords and code links are shared with the agent across sessions.",
   "type": "module",
   "main": "index.js",
@@ -48,5 +48,10 @@
   "homepage": "https://github.com/jypjypjypjyp/dsh-vibe-reading#readme",
   "bugs": {
     "url": "https://github.com/jypjypjypjyp/dsh-vibe-reading/issues"
+  },
+  "scripts": {
+    "check:theme": "node scripts/check-theme-colors.mjs",
+    "check:css": "node scripts/check-css-classes.mjs",
+    "check": "npm run -s check:theme && npm run -s check:css"
   }
 }

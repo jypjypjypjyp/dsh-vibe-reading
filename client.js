@@ -192,6 +192,12 @@ window.__ModuleLoader__.load({
         copyText: "复制",
         noteTitle: "添加笔记",
         editNoteTitle: "编辑笔记",
+        askAnnotationTitle: "删除这条标注？",
+        askAnnotationBody: "高亮与它的笔记会一起删掉，不能恢复。",
+        askPaperTitle: "删除这篇论文？",
+        askPaperBody: "pdf、标注、笔记和论文文件夹会一起删掉，不能恢复。",
+        askNoteTitle: "删除这条笔记？",
+        askNoteBody: "这块笔记的内容会一起删掉，不能恢复。",
         hlCardEmpty: "还没有笔记，点「编辑笔记」写一条",
         copied: "已复制链接",
         codeClone: "克隆",
@@ -226,6 +232,8 @@ window.__ModuleLoader__.load({
         deletePaper: "删除这篇论文",
         assignPaper: "修改归属",
         assignTitle: "这篇论文放在哪里",
+        assignMore: "更多（{n} 个工作区）",
+        assignLess: "收起",
         assignGlobal: "全局库",
         assignGlobalHint: "不属于任何工作区",
         assignWorkspaceHint: "跟随工作区，文件存在它的 .vibe_reading 下",
@@ -303,6 +311,11 @@ window.__ModuleLoader__.load({
         jumpToPage: "跳到这一页",
         jumpToast: "正在跳到第 {page} 页",
         newPaperNote: "新建笔记",
+        notePageLabel: "放在第几页",
+        noteColorLabel: "标记颜色",
+        noteReadTitle: "查看笔记",
+        notePageChip: "第 {page} 页",
+        noteMarkdownHint: "支持 Markdown：标题、列表、引用、代码块；换行会保留",
         paperNotePlaceholder: "一句话结论，不超过 40 字",
         noPaperNotes: "还没有笔记。读到结论时记一句，下次会话直接可读。",
         codeSection: "关联代码",
@@ -381,6 +394,12 @@ window.__ModuleLoader__.load({
         copyText: "Copy",
         noteTitle: "Add a note",
         editNoteTitle: "Edit note",
+        askAnnotationTitle: "Delete this annotation?",
+        askAnnotationBody: "Its highlight and note go with it, for good.",
+        askPaperTitle: "Delete this paper?",
+        askPaperBody: "Its pdf, annotations, notes and folder go with it, for good.",
+        askNoteTitle: "Delete this note?",
+        askNoteBody: "This block of notes is removed for good.",
         hlCardEmpty: "No note yet — use Edit note to add one",
         copied: "Link copied",
         codeClone: "Clone",
@@ -415,6 +434,8 @@ window.__ModuleLoader__.load({
         deletePaper: "Delete this paper",
         assignPaper: "Change owner",
         assignTitle: "Where does this paper live?",
+        assignMore: "More ({n} workspaces)",
+        assignLess: "Show less",
         assignGlobal: "Global library",
         assignGlobalHint: "Not tied to any workspace",
         assignWorkspaceHint: "Follows the workspace, stored in its .vibe_reading",
@@ -492,6 +513,11 @@ window.__ModuleLoader__.load({
         jumpToPage: "Jump to this page",
         jumpToast: "Jumping to page {page}",
         newPaperNote: "New note",
+        notePageLabel: "Pin to page",
+        noteColorLabel: "Marker colour",
+        noteReadTitle: "Read note",
+        notePageChip: "p{page}",
+        noteMarkdownHint: "Markdown works here: headings, lists, quotes, code fences; newlines are kept",
         paperNotePlaceholder: "One-sentence takeaway, 40 characters or fewer",
         noPaperNotes: "No notes yet. Jot one line when a conclusion lands; the next session reads it.",
         codeSection: "Linked code",
@@ -1056,6 +1082,200 @@ window.__ModuleLoader__.load({
       return String(value === null || value === undefined ? "" : value).replace(/\s+/g, "");
     }
 
+    /** Paper-note marker colours; every one is a theme token. */
+    var NOTE_COLOR_KEYS = ["warn", "success", "business", "error", "brand"];
+    var NOTE_COLOR_VAR = {
+      warn: "var(--dsw-alias-state-warn-primary)",
+      success: "var(--dsw-alias-state-success-primary)",
+      business: "var(--dsw-alias-state-business-primary)",
+      error: "var(--dsw-alias-state-error-primary)",
+      brand: "var(--dsw-alias-brand-primary)"
+    };
+
+    function noteColorVar(key) {
+      return NOTE_COLOR_VAR[key] === undefined ? NOTE_COLOR_VAR.warn : NOTE_COLOR_VAR[key];
+    }
+
+    /** Page a note is pinned to; old notes without one sit on page one. */
+    function notePage(note) {
+      return note !== null && typeof note === "object" && Number.isFinite(note.page) && note.page > 0
+        ? Math.trunc(note.page)
+        : 1;
+    }
+
+    /** Inline markdown: code spans, bold, italic, links. */
+    function inlineMarkdown(text, keyBase) {
+      var pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^)\s]+\))/g;
+      var nodes = [];
+      var last = 0;
+      var match;
+      while ((match = pattern.exec(text)) !== null) {
+        if (match.index > last) nodes.push(text.slice(last, match.index));
+        var token = match[0];
+        var key = keyBase + "-i" + match.index;
+        if (token.charAt(0) === "`") {
+          nodes.push(h("code", { key: key, className: "pr-md-code" }, token.slice(1, -1)));
+        } else if (token.slice(0, 2) === "**" || token.slice(0, 2) === "__") {
+          nodes.push(h("strong", { key: key }, token.slice(2, -2)));
+        } else if (token.charAt(0) === "[") {
+          var cut = token.indexOf("](");
+          nodes.push(h("a", { key: key, href: token.slice(cut + 2, -1), target: "_blank", rel: "noreferrer" }, token.slice(1, cut)));
+        } else {
+          nodes.push(h("em", { key: key }, token.slice(1, -1)));
+        }
+        last = match.index + token.length;
+      }
+      if (last < text.length) nodes.push(text.slice(last));
+      return nodes.length === 0 ? "" : nodes.length === 1 ? nodes[0] : nodes;
+    }
+
+    /** Block markdown for note bodies: headings, lists, quotes, fences, paragraphs. */
+    function renderMarkdown(source) {
+      var lines = String(source === undefined || source === null ? "" : source).replace(/\r\n?/g, "\n").split("\n");
+      var blocks = [];
+      var index = 0;
+      var stamp = 0;
+
+      while (index < lines.length) {
+        var line = lines[index];
+        var key = "md" + stamp + "-";
+        stamp += 1;
+
+        if (/^\s*$/.test(line)) {
+          index += 1;
+          continue;
+        }
+
+        if (/^\s*```/.test(line)) {
+          var code = [];
+          index += 1;
+          while (index < lines.length && !/^\s*```/.test(lines[index])) {
+            code.push(lines[index]);
+            index += 1;
+          }
+          index += 1;
+          blocks.push(h("pre", { key: key, className: "pr-md-pre" }, h("code", null, code.join("\n"))));
+          continue;
+        }
+
+        var head = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (head !== null) {
+          var level = head[1].length;
+          blocks.push(h("div", { key: key, className: "pr-md-h pr-md-h" + level }, inlineMarkdown(head[2], key)));
+          index += 1;
+          continue;
+        }
+
+        if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+          blocks.push(h("hr", { key: key, className: "pr-md-hr" }));
+          index += 1;
+          continue;
+        }
+
+        if (/^\s*>/.test(line)) {
+          var quoted = [];
+          while (index < lines.length && /^\s*>/.test(lines[index])) {
+            quoted.push(lines[index].replace(/^\s*>\s?/, ""));
+            index += 1;
+          }
+          blocks.push(h("blockquote", { key: key, className: "pr-md-quote" }, renderMarkdown(quoted.join("\n"))));
+          continue;
+        }
+
+        if (/^\s*\|/.test(line)) {
+          var grid = [];
+          while (index < lines.length && /^\s*\|/.test(lines[index])) {
+            var cells = lines[index].trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
+            grid.push(cells.map(function (cell) { return cell.trim(); }));
+            index += 1;
+          }
+          // The second row is the | --- | separator; drop it when present.
+          var isRule = function (row) {
+            return row.length > 0 && row.every(function (cell) { return /^:?-{2,}:?$/.test(cell); });
+          };
+          var body = grid.filter(function (row) { return !isRule(row); });
+          var head = body.length > 1 ? body[0] : null;
+          var rest = head === null ? body : body.slice(1);
+          blocks.push(
+            h(
+              "table",
+              { key: key, className: "pr-md-table" },
+              head === null
+                ? null
+                : h(
+                  "thead",
+                  null,
+                  h(
+                    "tr",
+                    null,
+                    head.map(function (cell, column) {
+                      return h("th", { key: key + "h" + column }, inlineMarkdown(cell, key + "h" + column));
+                    })
+                  )
+                ),
+              h(
+                "tbody",
+                null,
+                rest.map(function (row, lineIndex) {
+                  return h(
+                    "tr",
+                    { key: key + "r" + lineIndex },
+                    row.map(function (cell, column) {
+                      return h("td", { key: key + "c" + lineIndex + "-" + column }, inlineMarkdown(cell, key + "c" + lineIndex + "-" + column));
+                    })
+                  );
+                })
+              )
+            )
+          );
+          continue;
+        }
+
+        if (/^\s*(?:[-*+]|\d+\.)\s+/.test(line)) {
+          var ordered = /^\s*\d+\./.test(line);
+          var items = [];
+          while (index < lines.length && /^\s*(?:[-*+]|\d+\.)\s+/.test(lines[index])) {
+            items.push(lines[index].replace(/^\s*(?:[-*+]|\d+\.)\s+/, ""));
+            index += 1;
+            while (index < lines.length && /^\s{2,}\S/.test(lines[index]) && !/^\s*(?:[-*+]|\d+\.)\s+/.test(lines[index])) {
+              items[items.length - 1] = items[items.length - 1] + "\n" + lines[index].trim();
+              index += 1;
+            }
+          }
+          blocks.push(
+            h(
+              ordered ? "ol" : "ul",
+              { key: key, className: "pr-md-list" },
+              items.map(function (item, order) {
+                return h("li", { key: key + "l" + order }, inlineMarkdown(item, key + "l" + order));
+              })
+            )
+          );
+          continue;
+        }
+
+        var paragraph = [line];
+        index += 1;
+        while (
+          index < lines.length
+          && !/^\s*$/.test(lines[index])
+          && !/^\s*(?:#{1,6}\s|```|>|\||[-*+]\s|\d+\.\s|(?:-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[index])
+        ) {
+          paragraph.push(lines[index]);
+          index += 1;
+        }
+        var nodes = [];
+        paragraph.forEach(function (part, position) {
+          if (position > 0) nodes.push(h("br", { key: key + "b" + position }));
+          var inline = inlineMarkdown(part, key + "p" + position);
+          if (Array.isArray(inline)) nodes.push.apply(nodes, inline);
+          else nodes.push(inline);
+        });
+        blocks.push(h("p", { key: key, className: "pr-md-p" }, nodes));
+      }
+      return blocks;
+    }
+
     function PdfPage(props) {
       var pdf = props.pdf;
       var pageNumber = props.pageNumber;
@@ -1161,10 +1381,38 @@ window.__ModuleLoader__.load({
         },
         h("canvas", { ref: canvasRef, className: "pr-canvas" }),
         h("div", { ref: textRef, className: "pr-text-layer" }),
+        props.notes !== undefined && props.notes.length > 0
+          ? h(
+              "div",
+              { className: "pr-page-notes" },
+              props.notes.map(function (note) {
+                var tint = noteColorVar(note.color);
+                var label = note.title !== undefined && note.title !== "" ? note.title : note.text.slice(0, 24);
+                return h(
+                  "button",
+                  {
+                    key: note.id,
+                    type: "button",
+                    className: "pr-page-note-chip",
+                    style: { borderColor: tint },
+                    title: (note.title !== "" ? note.title + " · " : "") + note.text.slice(0, 120),
+                    onClick: function (event) {
+                      event.stopPropagation();
+                      props.onOpenNote(note);
+                    }
+                  },
+                  h("span", { className: "pr-page-note-dot", style: { background: tint } }),
+                  h("span", { className: "pr-page-note-title" }, label)
+                );
+              })
+            )
+          : null,
         h(
           "div",
           { className: "pr-hl-layer" },
-          annotations.map(function (annotation) {
+          (function () {
+            var badgeOffset = 0;
+            return annotations.map(function (annotation) {
             var isNote = annotation.kind === "note";
             var rects = annotation.rects !== undefined && annotation.rects.length > 0
               ? annotation.rects
@@ -1172,6 +1420,9 @@ window.__ModuleLoader__.load({
             if (rects.length === 0) {
               // The quote was not found in the text layer: keep the annotation
               // visible on its page as a corner badge instead of dropping it.
+              // Badges stack down the page edge; overlapping them hid all but one.
+              var badgeTop = 6 + badgeOffset * 22;
+              badgeOffset += 1;
               return h(
                 "div",
                 {
@@ -1179,6 +1430,7 @@ window.__ModuleLoader__.load({
                   className: "pr-hl-badge"
                     + (annotation.author === "ai" ? " pr-hl-badge-ai" : "")
                     + (flashId === annotation.id ? " pr-hl-flash" : ""),
+                  style: { top: badgeTop + "px" },
                   title: annotation.note !== "" ? annotation.note : annotation.text
                 },
                 annotation.kind === "note" ? props.noteLabel : props.aiLabel
@@ -1198,7 +1450,8 @@ window.__ModuleLoader__.load({
                 }
               });
             });
-          })
+            });
+          })()
         )
       );
     }
@@ -1302,10 +1555,6 @@ window.__ModuleLoader__.load({
       var toast = toastPair[0];
       var setToast = toastPair[1];
 
-      var confirmPair = useState(null);
-      var confirmId = confirmPair[0];
-      var setConfirmId = confirmPair[1];
-
       /* Library filter ("all" / "global" / a workspace path). Kept apart from
          props.scope, which is the session the tab belongs to. */
       var listScopePair = useState("all");
@@ -1323,6 +1572,12 @@ window.__ModuleLoader__.load({
       var assignPair = useState(null);
       var assign = assignPair[0];
       var setAssign = assignPair[1];
+      var assignMorePair = useState(false);
+      var assignMore = assignMorePair[0];
+      var setAssignMore = assignMorePair[1];
+      var noteCardPair = useState(null);
+      var noteCardId = noteCardPair[0];
+      var setNoteCardId = noteCardPair[1];
 
       var queryPair = useState("");
       var query = queryPair[0];
@@ -1331,6 +1586,9 @@ window.__ModuleLoader__.load({
       var bulkAskPair = useState(false);
       var bulkAsk = bulkAskPair[0];
       var setBulkAsk = bulkAskPair[1];
+      var askPair = useState(null);
+      var ask = askPair[0];
+      var setAsk = askPair[1];
 
       var flashPair = useState(null);
       var hlCardPair = useState(null);
@@ -1607,6 +1865,42 @@ window.__ModuleLoader__.load({
         });
       }
 
+      function noteColorOf(note) {
+        var key = note !== null && typeof note === "object" ? note.color : undefined;
+        return NOTE_COLOR_KEYS.indexOf(key) < 0 ? "warn" : key;
+      }
+
+      /** Least used marker colour, so consecutive notes stay distinguishable. */
+      function nextNoteColor(notes) {
+        var counts = {};
+        NOTE_COLOR_KEYS.forEach(function (key) { counts[key] = 0; });
+        notes.forEach(function (note) {
+          var key = noteColorOf(note);
+          if (counts[key] !== undefined) counts[key] += 1;
+        });
+        var best = NOTE_COLOR_KEYS[0];
+        NOTE_COLOR_KEYS.forEach(function (key) {
+          if (counts[key] < counts[best]) best = key;
+        });
+        return best;
+      }
+
+      function notesOnPage(pageNumber) {
+        var list = meta === null || !Array.isArray(meta.paperNotes) ? [] : meta.paperNotes;
+        return list.filter(function (note) { return notePage(note) === pageNumber; });
+      }
+
+      function startNoteEdit(note) {
+        setNoteCardId(null);
+        setNoteDraft({
+          id: note.id,
+          title: note.title === undefined ? "" : note.title,
+          text: note.text,
+          page: notePage(note),
+          color: noteColorOf(note)
+        });
+      }
+
       function savePaperNote() {
         if (noteDraft === null) return;
         var text = noteDraft.text.trim().slice(0, 2000);
@@ -1614,11 +1908,15 @@ window.__ModuleLoader__.load({
         if (text === "") return;
         var notes = meta !== null && Array.isArray(meta.paperNotes) ? meta.paperNotes.slice() : [];
         var now = Date.now();
+        var page = Number.isFinite(noteDraft.page) && noteDraft.page > 0 ? Math.trunc(noteDraft.page) : 1;
+        var color = NOTE_COLOR_KEYS.indexOf(noteDraft.color) < 0 ? "warn" : noteDraft.color;
         if (noteDraft.id === null) {
           notes.push({
             id: newNoteId(),
             title: title,
             text: text,
+            page: page,
+            color: color,
             author: "human",
 
             createdAt: now,
@@ -1626,7 +1924,9 @@ window.__ModuleLoader__.load({
           });
         } else {
           notes = notes.map(function (note) {
-            return note.id === noteDraft.id ? Object.assign({}, note, { title: title, text: text, updatedAt: now }) : note;
+            return note.id === noteDraft.id
+              ? Object.assign({}, note, { title: title, text: text, page: page, color: color, updatedAt: now })
+              : note;
           });
         }
         applyPaperNotes(notes);
@@ -2373,12 +2673,6 @@ window.__ModuleLoader__.load({
       }
 
       function removePaper(id) {
-        if (confirmId !== id) {
-          setConfirmId(id);
-          setTimeout(function () { setConfirmId(function (current) { return current === id ? null : current; }); }, 3200);
-          return;
-        }
-        setConfirmId(null);
         deleteDoc(id)
           .then(function () {
             showToast(t("deleted"));
@@ -2649,7 +2943,7 @@ window.__ModuleLoader__.load({
                   "button",
                   {
                     type: "button",
-                    className: "pr-icon-btn pr-at-btn" + (parsing ? " pr-icon-btn-off" : ""),
+                    className: "pr-icon-btn" + (parsing ? " pr-icon-btn-off" : ""),
                     title: parsing ? t("pathBusy") : t("atPath"),
                     "aria-label": t("atPath"),
                     disabled: parsing,
@@ -2730,6 +3024,8 @@ window.__ModuleLoader__.load({
             annotations: annotationsByPage[pageNumber] === undefined ? [] : annotationsByPage[pageNumber],
             highlightColor: HIGHLIGHT_COLOR,
             noteColor: NOTE_COLOR,
+            notes: notesOnPage(pageNumber),
+            onOpenNote: function (note) { setNoteCardId(note.id); },
             flashId: flashId,
             aiLabel: t("aiAuthor"),
             noteLabel: t("noteKind"),
@@ -2776,6 +3072,12 @@ window.__ModuleLoader__.load({
             ? current.filter(function (value) { return value !== id; })
             : current.concat([id]);
         });
+      }
+
+      /** One dialog for both entry points, always starting collapsed. */
+      function openAssign(ids) {
+        setAssignMore(false);
+        setAssign({ ids: ids.slice() });
       }
 
       function assignPaper(ids, workspace) {
@@ -2871,6 +3173,42 @@ window.__ModuleLoader__.load({
         );
       }
 
+      /** One destructive-action prompt shared by every delete in the reader. */
+      function renderAsk() {
+        if (ask === null) return null;
+        return ReactDOM.createPortal(
+          h(
+            "div",
+            { className: "pr-assign-shade", onClick: function () { setAsk(null); } },
+            h(
+              "div",
+              { className: "pr-assign pr-confirm", onClick: function (event) { event.stopPropagation(); } },
+              h("div", { className: "pr-assign-title" }, ask.title),
+              ask.body ? h("div", { className: "pr-assign-sub" }, ask.body) : null,
+              h(
+                "div",
+                { className: "pr-confirm-row" },
+                h("button", { type: "button", className: "pr-btn pr-btn-sm", onClick: function () { setAsk(null); } }, t("cancel")),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "pr-btn pr-btn-sm pr-confirm-del",
+                    onClick: function () {
+                      var run = ask.run;
+                      setAsk(null);
+                      run();
+                    }
+                  },
+                  ask.label === undefined ? t("delete") : ask.label
+                )
+              )
+            )
+          ),
+          document.body
+        );
+      }
+
       function renderAssign() {
         var ids = (assign && assign.ids) || [];
         var options = [{
@@ -2881,6 +3219,10 @@ window.__ModuleLoader__.load({
         }].concat((workspaces || []).map(function (ws) {
           return { path: ws.path, name: ws.name, hint: t("assignWorkspaceHint"), count: ws.count };
         }));
+        // Workspaces that never held a paper stay out of the way until asked for.
+        var withPapers = options.filter(function (option) { return option.path === "" || option.count > 0; });
+        var rest = options.filter(function (option) { return option.path !== "" && option.count === 0; });
+        var visible = assignMore ? options : withPapers;
         // Portalled: the reader panel can be docked small, a dialog must still fit the viewport.
         return ReactDOM.createPortal(
           h(
@@ -2893,7 +3235,7 @@ window.__ModuleLoader__.load({
               ids.length > 1
                 ? h("div", { className: "pr-assign-sub" }, formatString(t("pickCount"), { n: ids.length }))
                 : null,
-              options.map(function (option) {
+              visible.map(function (option) {
                 return h(
                   "button",
                   {
@@ -2915,9 +3257,25 @@ window.__ModuleLoader__.load({
                 );
               }),
               h(
-                "button",
-                { type: "button", className: "pr-link-btn pr-assign-close", onClick: function () { setAssign(null); } },
-                t("close")
+                "div",
+                { className: "pr-assign-actions" },
+                rest.length === 0
+                  ? h("span", null)
+                  : h(
+                    "button",
+                    {
+                      type: "button",
+                      className: "pr-link-btn pr-assign-more",
+                      onClick: function () { setAssignMore(!assignMore); }
+                    },
+                    assignMore ? t("assignLess") : formatString(t("assignMore"), { n: rest.length }),
+                    h(Icon, { name: "chevronDown", size: 12 })
+                  ),
+                h(
+                  "button",
+                  { type: "button", className: "pr-link-btn pr-assign-close", onClick: function () { setAssign(null); } },
+                  t("close")
+                )
               )
             )
           ),
@@ -3014,7 +3372,7 @@ window.__ModuleLoader__.load({
                 h("span", { className: "pr-bulk-count" }, formatString(t("pickCount"), { n: picked.length })),
                 h(
                   "button",
-                  { type: "button", className: "pr-btn pr-btn-small", onClick: function () { setAssign({ ids: picked.slice() }); } },
+                  { type: "button", className: "pr-btn pr-btn-small", onClick: function () { openAssign(picked); } },
                   h(Icon, { name: "folder", size: 12 }),
                   t("pickMove")
                 ),
@@ -3042,7 +3400,6 @@ window.__ModuleLoader__.load({
 
       function renderDocCard(doc) {
         var active = doc.id === docId;
-        var confirming = confirmId === doc.id;
         var isPicked = picked.indexOf(doc.id) >= 0;
         var metaText = (doc.pageCount === null ? "" : t("pages")(doc.pageCount) + " · ")
           + formatBytes(doc.size) + " · " + formatDate(doc.updatedAt, lang);
@@ -3078,7 +3435,7 @@ window.__ModuleLoader__.load({
                 title: t("assignPaper"),
                 onClick: function (event) {
                   event.stopPropagation();
-                  setAssign({ ids: [doc.id] });
+                  openAssign([doc.id]);
                 }
               },
               h(Icon, { name: "folder", size: 12 })
@@ -3087,14 +3444,18 @@ window.__ModuleLoader__.load({
               "button",
               {
                 type: "button",
-                className: "pr-doc-del" + (confirming ? " pr-doc-del-confirm" : ""),
-                title: confirming ? t("confirmDelete") : t("deletePaper"),
+                className: "pr-doc-del",
+                title: t("deletePaper"),
                 onClick: function (event) {
                   event.stopPropagation();
-                  removePaper(doc.id);
+                  setAsk({
+                    title: t("askPaperTitle"),
+                    body: doc.title + " — " + t("askPaperBody"),
+                    run: function () { removePaper(doc.id); }
+                  });
                 }
               },
-              confirming ? t("confirmDelete") : h(Icon, { name: "trash", size: 13 })
+              h(Icon, { name: "trash", size: 13 })
             )
           ),
           h("div", { className: "pr-doc-thumb" }, h(DocThumb, { docId: doc.id })),
@@ -3175,6 +3536,22 @@ window.__ModuleLoader__.load({
         return source;
       }
 
+      /** One-line plain preview: markdown markers dropped, line breaks folded. */
+      function markdownPlain(text) {
+        return String(text === undefined || text === null ? "" : text)
+          .replace(/```[\s\S]*?```/g, " ")
+          .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+          .replace(/^\s{0,3}>\s?/gm, "")
+          .replace(/^\s{0,3}(?:[-*+]|\d+\.)\s+/gm, "· ")
+          .replace(/\*\*([^*]+)\*\*/g, "$1")
+          .replace(/__([^_]+)__/g, "$1")
+          .replace(/[*_`]/g, "")
+          .replace(/\[(?:[^\]]+)\]\(([^)]+)\)/g, "$1")
+          .replace(/\s*\n+\s*/g, " · ")
+          .replace(/(?:\s*·\s*){2,}/g, " · ")
+          .trim();
+      }
+
       function blockOf(text) {
         var source = typeof text === "string" ? text : "";
         var enclosed = /^【([^】]{1,16})】\s*([\s\S]*)$/.exec(source);
@@ -3198,13 +3575,54 @@ window.__ModuleLoader__.load({
                 placeholder: t("noteTitlePlaceholder"),
                 onChange: function (event) { setNoteDraft({ id: noteDraft.id, title: event.target.value, text: noteDraft.text }); }
               }),
+              h(
+                "div",
+                { className: "pr-note-compose-meta" },
+                h(
+                  "label",
+                  { className: "pr-note-compose-field" },
+                  h("span", { className: "pr-note-compose-label" }, t("notePageLabel")),
+                  h(
+                    "select",
+                    {
+                      className: "pr-scope pr-note-page-select",
+                      value: String(noteDraft.page),
+                      onChange: function (event) {
+                        setNoteDraft(Object.assign({}, noteDraft, { page: Number(event.target.value) }));
+                      }
+                    },
+                    pageSizes.map(function (size, index) {
+                      var page = index + 1;
+                      return h("option", { key: page, value: String(page) }, t("page").replace("{n}", String(page)));
+                    })
+                  )
+                ),
+                h(
+                  "div",
+                  { className: "pr-note-colors", title: t("noteColorLabel") },
+                  NOTE_COLOR_KEYS.map(function (key) {
+                    return h("button", {
+                      key: key,
+                      type: "button",
+                      className: "pr-note-color" + (noteDraft.color === key ? " is-on" : ""),
+                      style: { background: noteColorVar(key) },
+                      title: t("noteColorLabel"),
+                      onClick: function () {
+                        setNoteDraft(Object.assign({}, noteDraft, { color: key }));
+                      }
+                    });
+                  })
+                )
+              ),
               h("textarea", {
                 className: "pr-note-input",
-                rows: 6,
+                rows: 8,
                 autoFocus: true,
                 value: noteDraft.text,
-                placeholder: t("paperNotePlaceholder"),
-                onChange: function (event) { setNoteDraft({ id: noteDraft.id, title: noteDraft.title, text: event.target.value }); }
+                placeholder: t("noteMarkdownHint"),
+                onChange: function (event) {
+                  setNoteDraft(Object.assign({}, noteDraft, { text: event.target.value }));
+                }
               }),
               h(
                 "div",
@@ -3223,7 +3641,10 @@ window.__ModuleLoader__.load({
                 {
                   type: "button",
                   className: "pr-btn pr-btn-primary pr-btn-sm pr-note-new",
-                  onClick: function () { setNoteDraft({ id: null, title: "", text: "" }); }
+                  onClick: function () {
+                    var existing = meta === null || !Array.isArray(meta.paperNotes) ? [] : meta.paperNotes;
+                    setNoteDraft({ id: null, title: "", text: "", page: 1, color: nextNoteColor(existing) });
+                  }
                 },
                 t("newPaperNote")
               )
@@ -3237,6 +3658,11 @@ window.__ModuleLoader__.load({
                   return h(
                     "div",
                     { className: "pr-note-row", key: note.id },
+                    h("span", {
+                      className: "pr-note-dot",
+                      style: { background: noteColorVar(noteColorOf(note)) },
+                      title: t("notePageChip").replace("{page}", String(notePage(note)))
+                    }),
                     h("span", { className: "pr-note-row-mark" }, note.author === "ai" ? "AI" : "·"),
                     h(
                       "div",
@@ -3244,31 +3670,43 @@ window.__ModuleLoader__.load({
                         role: "button",
                         tabIndex: 0,
                         className: "pr-note-row-text pr-note-row-open",
-                        title: t("editNoteTitle"),
-                        onClick: function () { setNoteDraft({ id: note.id, title: note.title || "", text: note.text }); },
+                        title: t("noteReadTitle"),
+                        onClick: function () { setNoteCardId(note.id); },
                         onKeyDown: function (event) {
                           if (event.key === "Enter" || event.key === " ") {
                             event.preventDefault();
-                            setNoteDraft({ id: note.id, title: note.title || "", text: note.text });
+                            setNoteCardId(note.id);
                           }
                         }
                       },
                       (note.title || "") !== ""
                         ? [
                             h("span", { key: "t", className: "pr-note-block-title" }, note.title),
-                            h("span", { key: "b", className: "pr-note-block-body" }, noteBody(note.title, note.text))
+                            h("span", { key: "b", className: "pr-note-block-body" }, markdownPlain(noteBody(note.title, note.text)))
                           ]
                         : blockOf(note.text).label !== ""
                           ? [
                               h("span", { key: "t", className: "pr-note-block-title" }, blockOf(note.text).label),
-                              h("span", { key: "b", className: "pr-note-block-body" }, blockOf(note.text).body)
+                              h("span", { key: "b", className: "pr-note-block-body" }, markdownPlain(blockOf(note.text).body))
                             ]
-                          : note.text
+                          : markdownPlain(note.text)
                     ),
                     h(
                       "div",
                       { className: "pr-note-row-actions" },
-                      iconButton("trash", t("delete"), function () { deletePaperNote(note.id); }, { className: "pr-icon-btn pr-icon-btn-sm" })
+                      h(
+                        "span",
+                        { className: "pr-note-row-page" },
+                        t("notePageChip").replace("{page}", String(notePage(note)))
+                      ),
+                      iconButton("pencil", t("editNoteTitle"), function () { startNoteEdit(note); }, { className: "pr-icon-btn pr-icon-btn-sm" }),
+                      iconButton("trash", t("delete"), function () {
+                        setAsk({
+                          title: t("askNoteTitle"),
+                          body: note.title !== "" ? note.title : t("askNoteBody"),
+                          run: function () { deletePaperNote(note.id); }
+                        });
+                      }, { className: "pr-icon-btn pr-icon-btn-sm" })
                     )
                   );
                 })
@@ -3380,7 +3818,14 @@ window.__ModuleLoader__.load({
                     type: "button",
                     className: "pr-icon-btn pr-icon-btn-sm pr-icon-btn-danger",
                     title: t("delete"),
-                    onClick: function (event) { event.stopPropagation(); removeAnnotation(annotation.id); }
+                    onClick: function (event) {
+                      event.stopPropagation();
+                      setAsk({
+                        title: t("askAnnotationTitle"),
+                        body: t("askAnnotationBody"),
+                        run: function () { removeAnnotation(annotation.id); }
+                      });
+                    }
                   },
                   h(Icon, { name: "trash", size: 12 })
                 )
@@ -3860,13 +4305,16 @@ window.__ModuleLoader__.load({
               key: "delete",
               className: "pr-menu-item pr-menu-item-danger",
               onClick: function () {
-                var needsConfirm = confirmId !== docId;
-                removePaper(docId);
-                if (!needsConfirm) setMoreOpen(false);
+                setMoreOpen(false);
+                setAsk({
+                  title: t("askPaperTitle"),
+                  body: (meta === null ? "" : meta.title + " — ") + t("askPaperBody"),
+                  run: function () { removePaper(docId); }
+                });
               }
             },
             h(Icon, { name: "trash", size: 14 }),
-            confirmId === docId ? t("confirmDelete") : t("deletePaper")
+            t("deletePaper")
           ));
         }
         items.push(h(
@@ -4109,6 +4557,66 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
+      function renderNoteCard() {
+        if (noteCardId === null) return null;
+        var list = meta === null || !Array.isArray(meta.paperNotes) ? [] : meta.paperNotes;
+        var note = null;
+        for (var index = 0; index < list.length; index += 1) {
+          if (list[index].id === noteCardId) {
+            note = list[index];
+            break;
+          }
+        }
+        if (note === null) return null;
+        var tint = noteColorVar(noteColorOf(note));
+        // Portalled: the panel can be docked narrow, a note must still be readable.
+        return ReactDOM.createPortal(
+          h(
+            "div",
+            { className: "pr-note-card-shade", onClick: function () { setNoteCardId(null); } },
+            h(
+              "div",
+              { className: "pr-note-card", onClick: function (event) { event.stopPropagation(); } },
+              h(
+                "div",
+                { className: "pr-note-card-head" },
+                h("span", { className: "pr-note-card-dot", style: { background: tint } }),
+                h("span", { className: "pr-note-card-title" }, note.title !== "" ? note.title : t("paperNotes")),
+                h("span", { className: "pr-note-card-page" }, t("notePageChip").replace("{page}", String(notePage(note)))),
+                iconButton("close", t("close"), function () { setNoteCardId(null); }, { className: "pr-icon-btn pr-icon-btn-sm" })
+              ),
+              h("div", { className: "pr-note-card-body" }, renderMarkdown(noteBody(note.title === undefined ? "" : note.title, note.text))),
+              h(
+                "div",
+                { className: "pr-note-card-foot" },
+                h(
+                  "button",
+                  { type: "button", className: "pr-hl-card-btn", onClick: function () { startNoteEdit(note); } },
+                  t("editNoteTitle")
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "pr-hl-card-btn pr-hl-card-btn-danger",
+                    onClick: function () {
+                      setNoteCardId(null);
+                      setAsk({
+                        title: t("askNoteTitle"),
+                        body: note.title !== "" ? note.title : t("askNoteBody"),
+                        run: function () { deletePaperNote(note.id); }
+                      });
+                    }
+                  },
+                  t("delete")
+                )
+              )
+            )
+          ),
+          document.body
+        );
+      }
+
       function renderHlCard() {
         if (hlCard === null) return null;
         var annotation = hlCard.annotation;
@@ -4150,7 +4658,18 @@ window.__ModuleLoader__.load({
             ),
             h(
               "button",
-              { type: "button", className: "pr-hl-card-btn pr-hl-card-btn-danger", onClick: function () { setHlCard(null); removeAnnotation(annotation.id); } },
+              {
+                type: "button",
+                className: "pr-hl-card-btn pr-hl-card-btn-danger",
+                onClick: function () {
+                  setHlCard(null);
+                  setAsk({
+                    title: t("askAnnotationTitle"),
+                    body: t("askAnnotationBody"),
+                    run: function () { removeAnnotation(annotation.id); }
+                  });
+                }
+              },
               h(Icon, { name: "trash", size: 12 }),
               h("span", null, t("delete"))
             )
@@ -4192,6 +4711,8 @@ window.__ModuleLoader__.load({
         renderTranslateCard(),
         renderNoteEditor(),
         renderHlCard(),
+        renderNoteCard(),
+        renderAsk(),
         dragOver ? h("div", { className: "pr-drop" }, h(Icon, { name: "upload", size: 26 }), h("div", null, t("dropHere"))) : null,
         toast !== null ? h("div", { className: "pr-toast" }, toast) : null,
         h("input", {
@@ -4774,13 +5295,17 @@ window.__ModuleLoader__.load({
       ".pr-assign{width:100%;max-width:320px;max-height:70vh;overflow:auto;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px;box-shadow:var(--dsw-elevation-prominent)}",
       ".pr-assign-title{font-size:12.5px;font-weight:600;padding:2px 2px 4px}",
       ".pr-assign-sub{font-size:11px;color:var(--dsw-alias-label-secondary);padding:0 2px 4px}",
+      ".pr-link-btn{display:inline-flex;align-items:center;gap:4px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;padding:5px 8px;border-radius:7px;cursor:pointer}",
+      ".pr-link-btn:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}",
+      ".pr-assign-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px}",
+      ".pr-assign-more{justify-self:flex-start;padding:5px 8px}",
       ".pr-assign-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer}",
       ".pr-assign-row:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1)}",
       ".pr-assign-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}",
       ".pr-assign-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".pr-assign-hint{font-size:10px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".pr-assign-count{flex:none;font-size:10px;color:var(--dsw-alias-label-secondary)}",
-      ".pr-assign-close{align-self:flex-end;margin-top:2px}",
+      ".pr-assign-close{border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary);padding:5px 14px}",
       ".pr-confirm{max-width:300px}",
       ".pr-confirm-row{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}",
       ".pr-confirm-del{background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-label-primary-foreground);border-color:transparent}",
@@ -4852,6 +5377,48 @@ window.__ModuleLoader__.load({
       ".pr-note-list{display:flex;flex-direction:column;gap:1px}",
       ".pr-notes-body{display:flex;flex-direction:column;gap:8px;padding:10px 12px;flex:1 1 auto;overflow:auto;overscroll-behavior:contain;min-height:0}",
       ".pr-note-composer{display:flex;flex-direction:column;gap:6px}",
+      ".pr-note-compose-meta{display:flex;align-items:center;gap:12px;flex-wrap:wrap}",
+      ".pr-note-compose-field{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}",
+      ".pr-note-compose-label{flex:none}",
+      ".pr-note-page-select{font-size:11.5px;padding:3px 6px}",
+      ".pr-note-colors{display:inline-flex;align-items:center;gap:5px}",
+      ".pr-note-color{width:14px;height:14px;border-radius:999px;border:1px solid transparent;padding:0;cursor:pointer;opacity:.5}",
+      ".pr-note-color:hover{opacity:.85}",
+      ".pr-note-color.is-on{opacity:1;box-shadow:0 0 0 2px var(--dsw-alias-bg-base),0 0 0 3px var(--dsw-alias-border-l1)}",
+      ".pr-note-dot{width:7px;height:7px;border-radius:999px;flex:none}",
+      ".pr-note-row-page{font-size:10px;color:var(--dsw-alias-label-secondary);flex:none}",
+      ".pr-page-notes{position:absolute;left:8px;top:8px;right:8px;display:flex;flex-wrap:wrap;gap:4px;z-index:4;pointer-events:none}",
+      ".pr-page-note-chip{pointer-events:auto;display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid;border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:1;padding:4px 9px 4px 7px;cursor:pointer;box-shadow:var(--dsw-elevation-panel)}",
+      ".pr-page-note-chip:hover{background:var(--dsw-alias-bg-layer-2)}",
+      ".pr-page-note-dot{width:7px;height:7px;border-radius:999px;flex:none}",
+      ".pr-page-note-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".pr-note-card-shade{position:fixed;inset:0;z-index:100003;background:color-mix(in srgb, var(--dsw-alias-bg-base) 70%, transparent);display:flex;align-items:center;justify-content:center;padding:24px}",
+      ".pr-note-card{width:100%;max-width:620px;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;box-shadow:var(--dsw-elevation-prominent)}",
+      ".pr-note-card-head{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l1)}",
+      ".pr-note-card-dot{width:8px;height:8px;border-radius:999px;flex:none}",
+      ".pr-note-card-title{min-width:0;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+      ".pr-note-card-page{margin-left:auto;flex:none;font-size:10.5px;color:var(--dsw-alias-label-secondary)}",
+      ".pr-note-card-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;font-family:var(--dsw-font-markdown-base-font-family,inherit);font-size:var(--dsw-font-markdown-base-font-size,13.5px);line-height:var(--dsw-font-markdown-base-line-height,1.72)}",
+      ".pr-note-card-foot{display:flex;justify-content:flex-end;gap:6px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1)}",
+      ".pr-note-card-head .pr-icon-btn{margin-left:2px}",
+      ".pr-md-p{margin:0 0 8px}",
+      ".pr-md-p:last-child{margin-bottom:0}",
+      ".pr-md-h{font-weight:600;margin:12px 0 6px}",
+      ".pr-md-h1{font-size:var(--dsw-font-markdown-h1-font-size,18px)}",
+      ".pr-md-h2{font-size:var(--dsw-font-markdown-h2-font-size,16px)}",
+      ".pr-md-h3{font-size:var(--dsw-font-markdown-h3-font-size,14.5px)}",
+      ".pr-md-h4,.pr-md-h5,.pr-md-h6{font-size:var(--dsw-font-markdown-h4-font-size,13px)}",
+      ".pr-md-list{margin:0 0 8px;padding-left:18px}",
+      ".pr-md-list li{margin:3px 0}",
+      ".pr-md-quote{margin:0 0 8px;padding:1px 0 1px 7px;border-left:2px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}",
+      ".pr-md-code{font-family:var(--dsw-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px;padding:1px 4px;border-radius:4px;background:var(--dsw-alias-bg-layer-2)}",
+      ".pr-md-pre{margin:0 0 8px;padding:8px 10px;border-radius:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);overflow:auto}",
+      ".pr-md-pre code{font-family:var(--dsw-font-family-code,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px;white-space:pre}",
+      ".pr-md-hr{border:0;border-top:1px solid var(--dsw-alias-border-l1);margin:10px 0}",
+      ".pr-md-table{border-collapse:collapse;margin:0 0 8px;width:100%;font-size:12px}",
+      ".pr-md-table th,.pr-md-table td{border:1px solid var(--dsw-alias-border-l1);padding:4px 7px;text-align:left;vertical-align:top}",
+      ".pr-md-table th{background:var(--dsw-alias-bg-layer-2);font-weight:600}",
+
       ".pr-note-input{width:100%;box-sizing:border-box;resize:vertical;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:6px 8px;line-height:1.5}",
       ".pr-note-compose-actions{display:flex;gap:6px}",
       ".pr-btn-sm{padding:4px 9px;font-size:11.5px}",

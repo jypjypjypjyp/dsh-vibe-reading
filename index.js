@@ -349,7 +349,9 @@ function normalizeMeta(meta, id) {
     lastPage: Number.isInteger(meta.lastPage) && meta.lastPage > 0 ? meta.lastPage : 1,
     scrollRatio: Number.isFinite(meta.scrollRatio) ? Math.min(Math.max(meta.scrollRatio, 0), 1) : 0,
     annotations: Array.isArray(meta.annotations) ? meta.annotations.map(normalizeAnnotation).filter(Boolean) : [],
-    paperNotes: Array.isArray(meta.paperNotes) ? meta.paperNotes.map(normalizePaperNote).filter(Boolean).slice(0, MAX_PAPER_NOTES) : [],
+    paperNotes: Array.isArray(meta.paperNotes)
+      ? meta.paperNotes.map((note, index) => normalizePaperNote(note, index)).filter(Boolean).slice(0, MAX_PAPER_NOTES)
+      : [],
     code: normalizeCode(meta.code),
     keywords: Array.isArray(meta.keywords)
       ? meta.keywords.filter((word) => typeof word === 'string' && word.trim() !== '').map((word) => word.trim().slice(0, 24)).slice(0, 8)
@@ -446,13 +448,18 @@ function normalizeParse(raw) {
   }
 }
 
-function normalizePaperNote(raw) {
+const NOTE_COLORS = ['warn', 'success', 'info', 'error', 'brand']
+
+function normalizePaperNote(raw, index) {
   if (raw === null || typeof raw !== 'object') return undefined
   const text = typeof raw.text === 'string' ? raw.text.trim().slice(0, MAX_NOTE_CHARS) : ''
   if (text === '') return undefined
   return {
     id: typeof raw.id === 'string' && raw.id !== '' ? raw.id.slice(0, 80) : randomUUID(),
     title: typeof raw.title === 'string' ? raw.title.trim().slice(0, 48) : '',
+    // The page whose top edge carries this note; 1 when nothing was recorded.
+    page: Number.isFinite(raw.page) ? Math.max(1, Math.trunc(raw.page)) : 1,
+    color: NOTE_COLORS.includes(raw.color) ? raw.color : NOTE_COLORS[(Number(index) || 0) % NOTE_COLORS.length],
     text,
     author: raw.author === 'ai' ? 'ai' : 'human',
     sourceSessionId: '',
@@ -529,21 +536,43 @@ async function writeMeta(meta) {
 }
 
 /** Workspaces that either hold papers or are registered as a store location. */
+/**
+ * Every workspace registered in this harness, newest first. The store is a
+ * plain JSON file the workspace service owns; an unreadable one just means we
+ * fall back to the workspaces that already hold papers.
+ */
+async function readHarnessWorkspaces() {
+  try {
+    const raw = await readFile(join(dshHome(), 'storages', 'workspace.json'), 'utf8')
+    const rows = JSON.parse(raw)?.tables?.workspaces
+    if (rows === undefined || rows === null || typeof rows !== 'object') return []
+    return Object.values(rows)
+      .filter((row) => row !== null && typeof row === 'object' && typeof row.path === 'string' && row.path !== '')
+      .map((row) => ({ path: row.path, name: typeof row.title === 'string' && row.title !== '' ? row.title : basename(row.path) }))
+  } catch {
+    return []
+  }
+}
+
 async function listWorkspaces() {
   const settings = await readSettings()
   const docs = await listLibrary()
   const found = new Map()
-  for (const root of settings.workspaceRoots) {
-    const workspace = workspaceOf(root)
-    found.set(workspace, { path: workspace, name: basename(workspace), count: 0 })
+  const remember = (path, name) => {
+    if (path === '') return
+    const key = workspaceOf(path)
+    if (!found.has(key)) found.set(key, { path: key, name: name !== '' ? name : basename(key), count: 0 })
   }
+  for (const workspace of await readHarnessWorkspaces()) remember(workspace.path, workspace.name)
+  for (const root of settings.workspaceRoots) remember(workspaceOf(root), '')
   for (const doc of docs) {
-    if (doc.workspacePath === '') continue
-    const entry = found.get(doc.workspacePath) ?? { path: doc.workspacePath, name: doc.workspaceName, count: 0 }
-    entry.count += 1
-    found.set(doc.workspacePath, entry)
+    remember(doc.workspacePath, doc.workspaceName)
+    if (doc.workspacePath !== '') {
+      const entry = found.get(workspaceOf(doc.workspacePath))
+      if (entry !== undefined) entry.count += 1
+    }
   }
-  return Array.from(found.values()).sort((a, b) => a.name.localeCompare(b.name))
+  return Array.from(found.values()).sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name))
 }
 
 async function listLibrary() {
@@ -901,7 +930,7 @@ function renderNotesMarkdown(meta) {
     lines.push('## 笔记', '')
     const notes = meta.paperNotes.slice().sort((a, b) => a.createdAt - b.createdAt)
     for (const note of notes) {
-      lines.push(`### ${noteHeading(note)}`, '', bodyOfNote(note), '')
+      lines.push(`### ${noteHeading(note)} · 第 ${note.page} 页`, '', bodyOfNote(note), '')
     }
   }
   if (meta.annotations.length > 0) {
@@ -1810,7 +1839,7 @@ async function handleApi(req, res, url, fence) {
       if (Number.isInteger(body.lastPage) && body.lastPage > 0) meta.lastPage = body.lastPage
       if (Number.isFinite(body.scrollRatio)) meta.scrollRatio = Math.min(Math.max(body.scrollRatio, 0), 1)
       if (Array.isArray(body.paperNotes)) {
-        meta.paperNotes = body.paperNotes.map(normalizePaperNote).filter(Boolean).slice(0, MAX_PAPER_NOTES)
+        meta.paperNotes = body.paperNotes.map((note, index) => normalizePaperNote(note, index)).filter(Boolean).slice(0, MAX_PAPER_NOTES)
       }
       if (Array.isArray(body.annotations)) {
         // Guard: an empty list from a client that never loaded the annotations
@@ -2226,7 +2255,7 @@ const ANNOTATION_TOOL_DESCRIPTION = [
   'action="list" without docId lists the library; with docId it returns that paper\'s paths (pdf / markdown / code), annotations and notes — call it first to see whether the paper was already read.',
   'action="search" looks for text across every paper\'s annotations and notes (pass docId to narrow it) — use it before reading to reuse what was already written.',
   'action="create" appends annotations, either one (page/text/note/kind) or a batch via items; text is the quoted passage, note is the judgement.',
-  'action="update"/"delete" change one annotation by id; action="note"/"update_note"/"delete_note" manage paper-level notes (write one note per block — 论文简介 / 方法骨架 / 关键证据 / 正反辩论 / 怎么用 / 已读 — each with its title).',
+  'action="update"/"delete" change one annotation by id; action="note"/"update_note"/"delete_note" manage paper-level notes (write one note per block — 论文简介 / 方法骨架 / 关键证据 / 正反辩论 / 怎么用 / 已读 — each with its title, the page it hangs on, and its marker colour).',
   'action="code" reads or records the open-source repository; the checkout itself lands in the paper folder\'s remote/ through the reader UI.',
   'action="keywords" stores 3-6 domain keywords and, when title is given, the concise paper title shown on the library card; run it after reading.',
   'action="import" adds a paper from a local PDF path or an http(s) link (arXiv abs links are rewritten to pdf); every import is checked for a %PDF- header and the 160 MB limit before it is stored.',
@@ -2344,6 +2373,8 @@ async function runAnnotationTool(args, exec) {
         id: note.id,
         title: note.title,
         text: note.text,
+        page: note.page,
+        color: note.color,
         author: note.author,
         updatedAt: note.updatedAt,
       })),
@@ -2456,6 +2487,8 @@ async function runAnnotationTool(args, exec) {
     const note = normalizePaperNote({
       title: typeof args.title === 'string' ? args.title.trim() : '',
       text,
+      page: Number.isFinite(args.page) ? Math.trunc(args.page) : 1,
+      color: typeof args.color === 'string' ? args.color : 'warn',
       author: 'ai',
       createdAt: now,
       updatedAt: now,
@@ -2480,7 +2513,9 @@ async function runAnnotationTool(args, exec) {
       const text = typeof args.note === 'string' ? args.note.trim() : ''
       if (text === '') throw Object.assign(new Error('update_note needs note text'), { status: 400 })
       const title = typeof args.title === 'string' ? args.title.trim().slice(0, 48) : meta.paperNotes[index].title
-      meta.paperNotes[index] = { ...meta.paperNotes[index], title, text: text.slice(0, MAX_NOTE_CHARS), updatedAt: Date.now() }
+      const page = Number.isFinite(args.page) ? Math.max(1, Math.trunc(args.page)) : meta.paperNotes[index].page
+      const color = typeof args.color === 'string' && NOTE_COLORS.includes(args.color) ? args.color : meta.paperNotes[index].color
+      meta.paperNotes[index] = { ...meta.paperNotes[index], title, page, color, text: text.slice(0, MAX_NOTE_CHARS), updatedAt: Date.now() }
     }
     meta.updatedAt = Date.now()
     await writeMeta(meta)
@@ -2594,6 +2629,8 @@ function registerAnnotationTool(ctx) {
           text: { type: 'string', description: 'the quoted passage the annotation is about' },
           note: { type: 'string', description: 'the annotation body, or the paper-level note text, written in the user\'s language and kept to one sentence' },
           title: { type: 'string', description: 'for note/update_note: the block heading, e.g. 论文简介 / 方法骨架 / 关键证据 / 正反辩论 / 怎么用 / 已读; for keywords: the concise paper title that replaces the file-name title on the library card' },
+          page: { type: 'number', description: 'for note/update_note: the page whose top edge carries this note, 1-based (defaults to 1)' },
+          color: { type: 'string', enum: NOTE_COLORS, description: 'for note/update_note: marker colour of the note, defaults to warn' },
         },
         required: ['action'],
         additionalProperties: false,
@@ -2691,6 +2728,7 @@ const PAPER_SKILL_BODY = `# 论文阅读：把读到的内容写进标注与笔�
 6. **【已读】** \`已读 p1-pN；覆盖 X 节；未读 附录\`——下次靠它判断要不要重读。
 
 每条 2–5 句。大笔记不是摘要：写判断与取舍，让没读过的人也能据此行动。
+写的时候给定 \`page\`（挂在哪一页的页首，默认第 1 页）与 \`color\`（warn / success / business / error / brand，不同块换不同色好认）；正文支持 Markdown：小标题、列表、引用、代码块，阅读器里点页首色标就能读。
 标注与笔记都落进 \`notes.md\`——那是这篇论文唯一的可读文档，别在别处再存一份。
 同一篇论文只有这一组：有新认识就改对应那块，某块彻底作废就删掉，不要留空壳。
 
