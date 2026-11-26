@@ -41,7 +41,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 1. 打开右侧边栏，点 `+`，选「Vibe Reading」。
 2. 导入都在论文库里：点左上角的书名打开库，头上有「本地」选文件与「链接」粘贴地址（PDF 直链，或 arXiv 的 `abs` / `pdf` 链接，`abs` 会自动换成 `pdf`）；也可以直接把 PDF 拖进面板。导入后静默用 markitdown 转一份 Markdown；「更多 → 解析正文（MinerU）」会中断它、改用 MinerU（要 Token），底部进度条实时走。
 3. 选中正文文字，浮出菜单里可以高亮、笔记、直接提问，或「翻译」——把这一段交给模型译出来，不带上文，浮窗里能换个方向再译一次；工具栏的 `</>` 打开「代码」页，`@` 把 `/dsh-vibe-reading` 与论文目录写进输入框，`⋯` 里有「解析正文（MinerU）」与「设置」。
-4. 面板三栏：**标注**（挂在某页某段原文上的高亮与批注，第二行显示它的笔记）、**笔记**（论文级的分块结论，可多条；每条带页码、颜色与标题——页首会出现同色胶囊，点开是渲染 Markdown 的悬浮窗：标题、列表、引用、代码块都认，换行保留）、**代码**（再分「开源仓库 / 本地复现仓库」两个页签，各有目录浏览：路径栏可「上一级」或直接回根目录，刷新留在当前目录，鼠标移到某个文件/文件夹上会出现 `@`，点一下把它的绝对路径写进输入框）。
+4. 面板三栏：**标注**（挂在某页某段原文上的高亮与批注，第二行显示它的笔记）、**笔记**（论文级的分块结论，可多条；每条带页码、颜色与标题——页首会出现同色胶囊，点开是渲染 Markdown 的悬浮窗：标题、列表、引用、表格、代码块都认，` ```mermaid ` 会画成真图，换行保留）、**代码**（再分「开源仓库 / 本地复现仓库」两个页签，各有目录浏览：路径栏可「上一级」或直接回根目录，刷新留在当前目录，鼠标移到某个文件/文件夹上会出现 `@`，点一下把它的绝对路径写进输入框）。
 
 论文存储有两种模式，在设置里切换：「全局」把所有工作区的论文放进同一个默认库；「跟随工作区」把论文放进它所属工作区的 `.vibe_reading/store/`（论文文件夹在同一个 `.vibe_reading/papers/<论文名>/`），导入时把来源工作区记进元数据，论文库卡片上标出归属。
 
@@ -77,7 +77,7 @@ dsh plugin --profile web add link:./projects/dsh-vibe-reading
 
 ## 批注工具
 
-`vibe_reading` 面向模型：`action=list` 不带 `docId` 列出论文库，带 `docId` 读该论文的全部标注与笔记；`action=import` 让 agent 自己从本地路径（`path`）或链接（`url`，arXiv 的 abs 会换成 pdf）加论文，落库前统一校验 `%PDF-` 文件头与 160 MB 上限；`action=rename` 改标题或关键词；`action=delete` 删论文并清掉它的工作目录（只在用户明确要求时用）；`action=create` 写一条标注（`page` + `text` + `note`，作者记为 AI）；`update` / `delete` 按 id 改删；`action=note` / `update_note` / `delete_note` 管论文级笔记（`title` + `page` 挂到某一页页首 + `color` 选标记色，正文写 Markdown）；`action=code` 读或写这篇论文的代码仓库（`repo` / `path`），阅读器「AI 查找仓库」按钮就是让 agent 走这条路自动回填。
+`vibe_reading` 面向模型：`action=list` 不带 `docId` 列出论文库，带 `docId` 读该论文的全部标注与笔记；`action=import` 让 agent 自己从本地路径（`path`）或链接（`url`，arXiv 的 abs 会换成 pdf）加论文，落库前统一校验 `%PDF-` 文件头与 160 MB 上限；`action=rename` 改标题或关键词；`action=delete` 删论文并清掉它的工作目录（只在用户明确要求时用）；`action=create` 写一条标注（`page` + `text` + `note`，作者记为 AI）；`update` / `delete` 按 id 改删；`action=note` / `update_note` / `delete_note` 管论文级笔记（`title` + `page` 挂到某一页页首 + `color` 选标记色，正文写 Markdown，` ```mermaid ` 会渲染成图）；`action=code` 读或写这篇论文的代码仓库（`repo` / `path`），阅读器「AI 查找仓库」按钮就是让 agent 走这条路自动回填。
 
 ## 跨会话记忆 skill
 

@@ -206,6 +206,11 @@ window.__ModuleLoader__.load({
         codeCloneFailed: "克隆失败",
         codeCloned: "已克隆到 remote/",
         codeClonedShort: "已克隆",
+        mdCopy: "复制",
+        mdCopied: "已复制",
+        mdCode: "代码",
+        mdWrap: "换行",
+        mdUnwrap: "不换行",
         codeNoRepo: "还没有仓库地址：先填地址，或让 AI 去找",
         codeReady: "仓库已记录，可以克隆",
         codeRemoteTab: "开源仓库",
@@ -408,6 +413,11 @@ window.__ModuleLoader__.load({
         codeCloneFailed: "Clone failed",
         codeCloned: "Cloned into remote/",
         codeClonedShort: "Cloned",
+        mdCopy: "Copy",
+        mdCopied: "Copied",
+        mdCode: "Code",
+        mdWrap: "Wrap",
+        mdUnwrap: "No wrap",
         codeNoRepo: "No repository yet — paste a URL, or let the agent find one",
         codeReady: "Repository recorded, ready to clone",
         codeRemoteTab: "Open source",
@@ -1274,6 +1284,106 @@ window.__ModuleLoader__.load({
         blocks.push(h("p", { key: key, className: "pr-md-p" }, nodes));
       }
       return blocks;
+    }
+
+    // ── rich markdown (the sidebar's own renderer) ───────────────────────────
+    // The sidebar already ships a markdown renderer that draws ```mermaid
+    // fences as diagrams. It is a lazy chunk exporting one React component, so
+    // load it on the first mermaid note and keep our plain renderer as fallback.
+
+    var RICH_MARKDOWN_URL = "/sidebar/bundle/mermaid.js";
+    var richMarkdownPromise = null;
+
+    function hasMermaidFence(text) {
+      return /(^|\n)\s*```\s*mermaid\b/.test(String(text === undefined || text === null ? "" : text));
+    }
+
+    function takeRichMarkdown() {
+      var registry = typeof window === "undefined" ? null : window.__dshChunks__;
+      if (registry === undefined || registry === null || typeof registry.mermaid !== "function") return null;
+      try {
+        var chunk = registry.mermaid(require);
+        return chunk !== undefined && chunk !== null && typeof chunk.MermaidMarkdown === "function" ? chunk.MermaidMarkdown : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    /** Resolves to the sidebar's MermaidMarkdown component, or null when the chunk is unavailable. */
+    function loadRichMarkdown() {
+      if (richMarkdownPromise !== null) return richMarkdownPromise;
+      richMarkdownPromise = new Promise(function (resolve) {
+        var found = takeRichMarkdown();
+        if (found !== null) {
+          resolve(found);
+          return;
+        }
+        if (typeof document === "undefined") {
+          resolve(null);
+          return;
+        }
+        var tries = 0;
+        function poll() {
+          tries += 1;
+          var ready = takeRichMarkdown();
+          if (ready !== null) {
+            resolve(ready);
+            return;
+          }
+          if (tries >= 120) {
+            resolve(null);
+            return;
+          }
+          window.setTimeout(poll, 250);
+        }
+        var script = document.createElement("script");
+        script.src = RICH_MARKDOWN_URL;
+        script.async = true;
+        /* A background tab drops the load event, so poll as well. */
+        script.onload = poll;
+        script.onerror = function () { resolve(null); };
+        document.head.appendChild(script);
+        window.setTimeout(poll, 250);
+      });
+      return richMarkdownPromise;
+    }
+
+    class RichMarkdownBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false };
+      }
+      static getDerivedStateFromError() {
+        return { failed: true };
+      }
+      render() {
+        return this.state.failed ? this.props.fallback : this.props.children;
+      }
+    }
+
+    /** Note body: our markdown, upgraded to the sidebar renderer when a mermaid fence is present. */
+    function NoteBody(props) {
+      var text = props.text;
+      var pair = useState(null);
+      var Rich = pair[0];
+      var setRich = pair[1];
+
+      useEffect(function () {
+        if (Rich !== null || !hasMermaidFence(text)) return undefined;
+        var alive = true;
+        loadRichMarkdown().then(function (component) {
+          if (alive && component !== null) setRich(function () { return component; });
+        });
+        return function () { alive = false; };
+      }, [text, Rich]);
+
+      var plain = h("div", { className: "pr-note-card-md" }, renderMarkdown(text));
+      if (Rich === null) return plain;
+      return h(
+        RichMarkdownBoundary,
+        { fallback: plain },
+        h("div", { className: "pr-note-card-md pr-note-card-rich" }, h(Rich, { text: text, codeLabels: props.codeLabels }))
+      );
     }
 
     function PdfPage(props) {
@@ -4585,7 +4695,16 @@ window.__ModuleLoader__.load({
                 h("span", { className: "pr-note-card-page" }, t("notePageChip").replace("{page}", String(notePage(note)))),
                 iconButton("close", t("close"), function () { setNoteCardId(null); }, { className: "pr-icon-btn pr-icon-btn-sm" })
               ),
-              h("div", { className: "pr-note-card-body" }, renderMarkdown(noteBody(note.title === undefined ? "" : note.title, note.text))),
+              h("div", { className: "pr-note-card-body" }, h(NoteBody, {
+                text: noteBody(note.title === undefined ? "" : note.title, note.text),
+                codeLabels: {
+                  copyLabel: t("mdCopy"),
+                  copiedLabel: t("mdCopied"),
+                  codeLabel: t("mdCode"),
+                  wrapLabel: t("mdWrap"),
+                  unwrapLabel: t("mdUnwrap")
+                }
+              })),
               h(
                 "div",
                 { className: "pr-note-card-foot" },
@@ -5399,6 +5518,9 @@ window.__ModuleLoader__.load({
       ".pr-note-card-title{min-width:0;font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
       ".pr-note-card-page{margin-left:auto;flex:none;font-size:10.5px;color:var(--dsw-alias-label-secondary)}",
       ".pr-note-card-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px 14px;font-family:var(--dsw-font-markdown-base-font-family,inherit);font-size:var(--dsw-font-markdown-base-font-size,13.5px);line-height:var(--dsw-font-markdown-base-line-height,1.72)}",
+      ".pr-note-card-md{min-width:0}",
+      ".pr-note-card-md > :first-child{margin-top:0}",
+      ".pr-note-card-rich{display:block}",
       ".pr-note-card-foot{display:flex;justify-content:flex-end;gap:6px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1)}",
       ".pr-note-card-head .pr-icon-btn{margin-left:2px}",
       ".pr-md-p{margin:0 0 8px}",
